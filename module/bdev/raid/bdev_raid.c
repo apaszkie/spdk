@@ -116,6 +116,7 @@ raid_bdev_create_cb(void *io_device, void *ctx_buf)
 	struct raid_bdev            *raid_bdev = io_device;
 	struct raid_bdev_io_channel *raid_ch = ctx_buf;
 	uint8_t i;
+	int ret = 0;
 
 	SPDK_DEBUGLOG(SPDK_LOG_BDEV_RAID, "raid_bdev_create_cb, %p\n", raid_ch);
 
@@ -139,19 +140,27 @@ raid_bdev_create_cb(void *io_device, void *ctx_buf)
 		raid_ch->base_channel[i] = spdk_bdev_get_io_channel(
 						   raid_bdev->base_bdev_info[i].desc);
 		if (!raid_ch->base_channel[i]) {
-			uint8_t j;
-
-			for (j = 0; j < i; j++) {
-				spdk_put_io_channel(raid_ch->base_channel[j]);
-			}
-			free(raid_ch->base_channel);
-			raid_ch->base_channel = NULL;
 			SPDK_ERRLOG("Unable to create io channel for base bdev\n");
-			return -ENOMEM;
+			ret = -ENOMEM;
+			break;
 		}
 	}
 
-	return 0;
+	if (!ret && raid_bdev->module->io_channel_resource_init) {
+		ret = raid_bdev->module->io_channel_resource_init(raid_bdev,
+				raid_bdev_io_channel_get_resource(raid_ch));
+	}
+
+	if (ret) {
+		for (; i > 0; --i) {
+			if (raid_ch->base_channel[i]) {
+				spdk_put_io_channel(raid_ch->base_channel[i]);
+			}
+		}
+		free(raid_ch->base_channel);
+		raid_ch->base_channel = NULL;
+	}
+	return ret;
 }
 
 /*
@@ -167,6 +176,7 @@ raid_bdev_create_cb(void *io_device, void *ctx_buf)
 static void
 raid_bdev_destroy_cb(void *io_device, void *ctx_buf)
 {
+	struct raid_bdev            *raid_bdev = io_device;
 	struct raid_bdev_io_channel *raid_ch = ctx_buf;
 	uint8_t i;
 
@@ -174,6 +184,12 @@ raid_bdev_destroy_cb(void *io_device, void *ctx_buf)
 
 	assert(raid_ch != NULL);
 	assert(raid_ch->base_channel);
+
+	if (raid_bdev->module->io_channel_resource_deinit) {
+		raid_bdev->module->io_channel_resource_deinit(raid_bdev,
+				raid_bdev_io_channel_get_resource(raid_ch));
+	}
+
 	for (i = 0; i < raid_ch->num_channels; i++) {
 		/* Free base bdev channels */
 		assert(raid_ch->base_channel[i] != NULL);
@@ -1400,7 +1416,7 @@ raid_bdev_configure(struct raid_bdev *raid_bdev)
 	SPDK_DEBUGLOG(SPDK_LOG_BDEV_RAID, "blockcnt %lu, blocklen %u\n",
 		      raid_bdev_gen->blockcnt, raid_bdev_gen->blocklen);
 	spdk_io_device_register(raid_bdev, raid_bdev_create_cb, raid_bdev_destroy_cb,
-				sizeof(struct raid_bdev_io_channel),
+				sizeof(struct raid_bdev_io_channel) + raid_bdev->module->io_channel_resource_size,
 				raid_bdev->bdev.name);
 	rc = spdk_bdev_register(raid_bdev_gen);
 	if (rc != 0) {
