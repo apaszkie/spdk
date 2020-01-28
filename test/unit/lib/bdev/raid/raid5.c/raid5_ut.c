@@ -645,7 +645,8 @@ handle_submit_bdev_io(enum spdk_bdev_io_type io_type,
 		CU_FAIL("Unknown chunk request_type");
 	}
 
-	if (chunk != stripe_req->parity_chunk || chunk->request_type != CHUNK_READ) {
+	if ((chunk != stripe_req->parity_chunk || chunk->request_type != CHUNK_READ) &&
+	    (io_info->buf != NULL || io_info->parity_buf != NULL)) {
 		size_t remaining = num_blocks * io_info->blocklen;
 		void *buf;
 		size_t *buf_offset;
@@ -817,6 +818,60 @@ test_raid5_submit_rw_request(void)
 	run_for_each_raid_io(__test_raid5_submit_rw_request);
 }
 
+static void
+__test_raid5_rmw(struct raid_io_info *io_info)
+{
+	struct raid5_info *r5info = io_info->r5info;
+	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(io_info->raid_io);
+	struct stripe *stripe;
+	struct stripe_request *stripe_req;
+	struct spdk_bdev_io *chunk_bdev_io, *tmp;
+	struct chunk *chunk;
+	uint64_t to_preread = 0;
+	uint64_t to_write = 0;
+
+	if (bdev_io->type == SPDK_BDEV_IO_TYPE_READ ||
+	    io_info->num_blocks == r5info->stripe_blocks) {
+		return;
+	}
+
+	stripe = raid5_get_stripe(r5info, io_info->stripe_idx);
+	SPDK_CU_ASSERT_FATAL(stripe != NULL);
+
+	raid5_submit_rw_request(io_info->raid_io);
+
+	TAILQ_FOREACH_SAFE(chunk_bdev_io, &io_info->bdev_io_queue, internal.link, tmp) {
+		chunk = chunk_bdev_io->internal.caller_ctx;
+
+		CU_ASSERT_EQUAL(chunk->request_type, CHUNK_PREREAD);
+
+		to_preread += chunk->preread_blocks;
+
+		free(chunk_bdev_io);
+	}
+
+	CU_ASSERT(to_preread > 0);
+
+	while ((stripe_req = TAILQ_LAST(&stripe->requests, requests_head))) {
+		CU_ASSERT_EQUAL(stripe_req->raid_io, io_info->raid_io);
+
+		FOR_EACH_CHUNK(stripe_req, chunk) {
+			to_write += chunk->req_blocks;
+		}
+
+		raid5_complete_stripe_request(stripe_req);
+	}
+
+	CU_ASSERT(to_write > 0);
+	CU_ASSERT(to_preread <= to_write);
+}
+
+static void
+test_raid5_rmw(void)
+{
+	run_for_each_raid_io(__test_raid5_rmw);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -833,6 +888,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_raid5_reclaim_stripes);
 	CU_ADD_TEST(suite, test_raid5_handle_stripe);
 	CU_ADD_TEST(suite, test_raid5_submit_rw_request);
+	CU_ADD_TEST(suite, test_raid5_rmw);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();
