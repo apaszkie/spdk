@@ -168,6 +168,10 @@ struct raid5_info {
 	pthread_spinlock_t active_stripes_lock;
 };
 
+struct raid5_io_channel {
+	TAILQ_HEAD(, spdk_bdev_io_wait_entry) retry_queue;
+};
+
 #define FOR_EACH_CHUNK(req, c) \
 	for (c = req->chunks; \
 	     c < req->chunks + req->raid_io->raid_bdev->num_base_bdevs; c++)
@@ -398,6 +402,17 @@ raid5_chunk_map_req_data(struct chunk *chunk)
 }
 
 static void
+raid5_io_channel_retry_request(struct raid5_io_channel *r5ch)
+{
+	struct spdk_bdev_io_wait_entry *waitq_entry;
+
+	waitq_entry = TAILQ_FIRST(&r5ch->retry_queue);
+	assert(waitq_entry != NULL);
+	TAILQ_REMOVE(&r5ch->retry_queue, waitq_entry, link);
+	waitq_entry->cb_fn(waitq_entry->cb_arg);
+}
+
+static void
 raid5_submit_stripe_request(struct stripe_request *stripe_req);
 
 static void
@@ -429,6 +444,7 @@ raid5_complete_stripe_request(struct stripe_request *stripe_req)
 	struct stripe *stripe = stripe_req->stripe;
 	struct raid_bdev_io *raid_io = stripe_req->raid_io;
 	enum spdk_bdev_io_status status = stripe_req->status;
+	struct raid5_io_channel *r5ch = raid_bdev_io_channel_get_resource(raid_io->raid_ch);
 	struct stripe_request *next_req;
 	struct chunk *chunk;
 	uint64_t req_blocks;
@@ -452,6 +468,10 @@ raid5_complete_stripe_request(struct stripe_request *stripe_req)
 
 	if (raid_bdev_io_complete_part(raid_io, req_blocks, status)) {
 		__atomic_fetch_sub(&stripe->refs, 1, __ATOMIC_SEQ_CST);
+
+		if (!TAILQ_EMPTY(&r5ch->retry_queue)) {
+			raid5_io_channel_retry_request(r5ch);
+		}
 	}
 }
 
@@ -889,6 +909,17 @@ raid5_get_stripe(struct raid5_info *r5info, uint64_t stripe_index)
 }
 
 static void
+raid5_submit_rw_request(struct raid_bdev_io *raid_io);
+
+static void
+_raid5_submit_rw_request(void *_raid_io)
+{
+	struct raid_bdev_io *raid_io = _raid_io;
+
+	raid5_submit_rw_request(raid_io);
+}
+
+static void
 raid5_submit_rw_request(struct raid_bdev_io *raid_io)
 {
 	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(raid_io);
@@ -901,7 +932,13 @@ raid5_submit_rw_request(struct raid_bdev_io *raid_io)
 
 	stripe = raid5_get_stripe(r5info, stripe_index);
 	if (spdk_unlikely(stripe == NULL)) {
-		assert(false); /* TODO: handle this */
+		struct raid5_io_channel *r5ch = raid_bdev_io_channel_get_resource(raid_io->raid_ch);
+		struct spdk_bdev_io_wait_entry *wqe = &raid_io->waitq_entry;
+
+		wqe->cb_fn = _raid5_submit_rw_request;
+		wqe->cb_arg = raid_io;
+		TAILQ_INSERT_TAIL(&r5ch->retry_queue, wqe, link);
+		return;
 	}
 
 	raid_io->base_bdev_io_remaining = num_blocks;
@@ -1082,13 +1119,34 @@ raid5_stop(struct raid_bdev *raid_bdev)
 	raid5_free(r5info);
 }
 
+static int
+raid5_io_channel_resource_init(struct raid_bdev *raid_bdev, void *resource)
+{
+	struct raid5_io_channel *r5ch = resource;
+
+	TAILQ_INIT(&r5ch->retry_queue);
+
+	return 0;
+}
+
+static void
+raid5_io_channel_resource_deinit(struct raid_bdev *raid_bdev, void *resource)
+{
+	struct raid5_io_channel *r5ch = resource;
+
+	assert(TAILQ_EMPTY(&r5ch->retry_queue));
+}
+
 static struct raid_bdev_module g_raid5_module = {
 	.level = RAID5,
 	.base_bdevs_min = 3,
 	.base_bdevs_max_degraded = 1,
+	.io_channel_resource_size = sizeof(struct raid5_io_channel),
 	.start = raid5_start,
 	.stop = raid5_stop,
 	.submit_rw_request = raid5_submit_rw_request,
+	.io_channel_resource_init = raid5_io_channel_resource_init,
+	.io_channel_resource_deinit = raid5_io_channel_resource_deinit,
 };
 RAID_MODULE_REGISTER(&g_raid5_module)
 

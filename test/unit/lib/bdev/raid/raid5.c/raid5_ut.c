@@ -503,14 +503,19 @@ run_for_each_raid_io(void (*test_fn)(struct raid_io_info *))
 			{ params->strip_size - 1, 2 },
 		};
 		struct raid5_info *r5info;
-		struct raid_bdev_io_channel raid_ch;
+		struct {
+			struct raid_bdev_io_channel raid_ch;
+			struct raid5_io_channel r5ch;
+		} ch;
 		unsigned int i;
 
 		r5info = create_raid5(params);
 
-		raid_ch.num_channels = params->num_base_bdevs;
-		raid_ch.base_channel = calloc(params->num_base_bdevs, sizeof(struct spdk_io_channel *));
-		SPDK_CU_ASSERT_FATAL(raid_ch.base_channel != NULL);
+		ch.raid_ch.num_channels = params->num_base_bdevs;
+		ch.raid_ch.base_channel = calloc(params->num_base_bdevs, sizeof(struct spdk_io_channel *));
+		SPDK_CU_ASSERT_FATAL(ch.raid_ch.base_channel != NULL);
+
+		raid5_io_channel_resource_init(r5info->raid_bdev, &ch.r5ch);
 
 		for (i = 0; i < SPDK_COUNTOF(test_requests); i++) {
 			uint64_t stripe_idx;
@@ -527,7 +532,7 @@ run_for_each_raid_io(void (*test_fn)(struct raid_io_info *))
 					struct raid_io_info io_info;
 
 					init_io_info(&io_info, *io_type,
-						     r5info, &raid_ch,
+						     r5info, &ch.raid_ch,
 						     stripe_idx * r5info->stripe_blocks + test_requests[i].stripe_offset_blocks,
 						     test_requests[i].num_blocks,
 						     stripe_idx,
@@ -538,7 +543,9 @@ run_for_each_raid_io(void (*test_fn)(struct raid_io_info *))
 			}
 		}
 
-		free(raid_ch.base_channel);
+		raid5_io_channel_resource_deinit(r5info->raid_bdev, &ch.r5ch);
+
+		free(ch.raid_ch.base_channel);
 
 		delete_raid5(r5info);
 	}
