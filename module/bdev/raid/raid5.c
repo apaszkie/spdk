@@ -206,6 +206,111 @@ raid5_stripe_data_chunks_num(const struct raid_bdev *raid_bdev)
 	return raid_bdev->num_base_bdevs - raid_bdev->module->base_bdevs_max_degraded;
 }
 
+#ifdef SPDK_CONFIG_ISAL
+#include "isa-l/include/raid.h"
+
+static void
+raid5_xor_buf(void *restrict to, void *restrict from, size_t size)
+{
+	int ret;
+	void *vects[3] = { from, to, to };
+
+	ret = xor_gen(3, size, vects);
+	if (ret) {
+		SPDK_ERRLOG("xor_gen failed\n");
+	}
+}
+#else
+static void
+raid5_xor_buf(void *restrict to, void *restrict from, size_t size)
+{
+	long *_to = to;
+	long *_from = from;
+	size_t i;
+
+	assert(size % sizeof(*_to) == 0);
+
+	size /= sizeof(*_to);
+
+	for (i = 0; i < size; i++) {
+		_to[i] ^= _from[i];
+	}
+}
+#endif
+
+static void
+raid5_xor_iovs(struct iovec *iovs_dest, int iovs_dest_cnt, size_t iovs_dest_offset,
+	       const struct iovec *iovs_src, int iovs_src_cnt, size_t iovs_src_offset,
+	       size_t size)
+{
+	struct iovec *v1;
+	const struct iovec *v2;
+	size_t off1, off2;
+	size_t n;
+
+	v1 = iovs_dest;
+	v2 = iovs_src;
+
+	n = 0;
+	off1 = 0;
+	while (v1 < iovs_dest + iovs_dest_cnt) {
+		n += v1->iov_len;
+		if (n > iovs_dest_offset) {
+			off1 = v1->iov_len - (n - iovs_dest_offset);
+			break;
+		}
+		v1++;
+	}
+
+	n = 0;
+	off2 = 0;
+	while (v2 < iovs_src + iovs_src_cnt) {
+		n += v2->iov_len;
+		if (n > iovs_src_offset) {
+			off2 = v2->iov_len - (n - iovs_src_offset);
+			break;
+		}
+		v2++;
+	}
+
+	while (v1 < iovs_dest + iovs_dest_cnt &&
+	       v2 < iovs_src + iovs_src_cnt &&
+	       size > 0) {
+		n = spdk_min(v1->iov_len - off1, v2->iov_len - off2);
+
+		if (n > size) {
+			n = size;
+		}
+
+		size -= n;
+
+		raid5_xor_buf(v1->iov_base + off1, v2->iov_base + off2, n);
+
+		off1 += n;
+		off2 += n;
+
+		if (off1 == v1->iov_len) {
+			off1 = 0;
+			v1++;
+		}
+
+		if (off2 == v2->iov_len) {
+			off2 = 0;
+			v2++;
+		}
+	}
+}
+
+static void
+raid5_memset_iovs(struct iovec *iovs, int iovcnt, char c)
+{
+	struct iovec *iov;
+
+	for (iov = iovs; iov < iovs + iovcnt; iov++) {
+		memset(iov->iov_base, c, iov->iov_len);
+	}
+}
+
 static int
 raid5_chunk_map_iov(struct chunk *chunk, const struct iovec *iov, int iovcnt,
 		    uint64_t offset, uint64_t len)
@@ -468,16 +573,37 @@ raid5_submit_chunk_request(struct chunk *chunk, enum chunk_request_type type)
 }
 
 static void
-raid5_stripe_write_preread_complete(struct stripe_request *stripe_req)
+raid5_stripe_write_submit(struct stripe_request *stripe_req)
 {
 	struct chunk *chunk;
-	int ret;
 
 	stripe_req->chunk_requests_complete_cb = raid5_complete_stripe_request;
 
-	/* TODO: update parity */
+	FOR_EACH_CHUNK(stripe_req, chunk) {
+		if (chunk->req_blocks > 0) {
+			raid5_submit_chunk_request(chunk, CHUNK_WRITE);
+		}
+	}
+}
+
+static void
+raid5_stripe_write_preread_complete(struct stripe_request *stripe_req)
+{
+	struct chunk *chunk;
+	struct chunk *p_chunk = stripe_req->parity_chunk;
+	uint32_t blocklen = stripe_req->raid_io->raid_bdev->bdev.blocklen;
+	int ret = 0;
+
+	raid5_memset_iovs(p_chunk->iovs, p_chunk->iovcnt, 0);
 
 	FOR_EACH_DATA_CHUNK(stripe_req, chunk) {
+		if (chunk->preread_blocks > 0) {
+			raid5_xor_iovs(p_chunk->iovs, p_chunk->iovcnt,
+				       (chunk->preread_offset - p_chunk->req_offset) * blocklen,
+				       chunk->iovs, chunk->iovcnt, 0,
+				       chunk->preread_blocks * blocklen);
+		}
+
 		if (chunk->req_blocks > 0) {
 			ret = raid5_chunk_map_req_data(chunk);
 			if (ret) {
@@ -485,9 +611,14 @@ raid5_stripe_write_preread_complete(struct stripe_request *stripe_req)
 				return;
 			}
 
-			raid5_submit_chunk_request(chunk, CHUNK_WRITE);
+			raid5_xor_iovs(p_chunk->iovs, p_chunk->iovcnt,
+				       (chunk->req_offset - p_chunk->req_offset) * blocklen,
+				       chunk->iovs, chunk->iovcnt, 0,
+				       chunk->req_blocks * blocklen);
 		}
 	}
+
+	raid5_stripe_write_submit(stripe_req);
 }
 
 static void

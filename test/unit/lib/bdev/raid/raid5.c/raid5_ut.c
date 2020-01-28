@@ -424,6 +424,7 @@ struct raid_io_info {
 	uint64_t stripe_offset_blocks;
 	void *buf;
 	size_t buf_pos;
+	void *parity_buf;
 	TAILQ_HEAD(, spdk_bdev_io) bdev_io_queue;
 };
 
@@ -458,6 +459,7 @@ init_io_info(struct raid_io_info *io_info, enum spdk_bdev_io_type type,
 	io_info->stripe_offset_blocks = stripe_offset_blocks;
 	io_info->buf = NULL;
 	io_info->buf_pos = 0;
+	io_info->parity_buf = NULL;
 	TAILQ_INIT(&io_info->bdev_io_queue);
 }
 
@@ -626,20 +628,32 @@ handle_submit_bdev_io(enum spdk_bdev_io_type io_type,
 		CU_FAIL("Unknown chunk request_type");
 	}
 
-	if (chunk != stripe_req->parity_chunk) {
+	if (chunk != stripe_req->parity_chunk || chunk->request_type != CHUNK_READ) {
 		size_t remaining = num_blocks * io_info->blocklen;
+		void *buf;
+		size_t *buf_offset;
+		size_t parity_buf_offset;
 		int i;
+
+		if (chunk == stripe_req->parity_chunk) {
+			buf = io_info->parity_buf;
+			buf_offset = &parity_buf_offset;
+			parity_buf_offset = (offset_blocks % io_info->r5info->raid_bdev->strip_size) * io_info->blocklen;
+		} else {
+			buf = io_info->buf;
+			buf_offset = &io_info->buf_pos;
+		}
 
 		for (i = 0; i < iovcnt; i++) {
 			if (chunk->request_type == CHUNK_PREREAD) {
 				memset(iov[i].iov_base, 0, iov[i].iov_len);
 			} else {
 				if (io_type == SPDK_BDEV_IO_TYPE_READ) {
-					memcpy(iov[i].iov_base, io_info->buf + io_info->buf_pos, iov[i].iov_len);
+					memcpy(iov[i].iov_base, buf + *buf_offset, iov[i].iov_len);
 				} else {
-					memcpy(io_info->buf + io_info->buf_pos, iov[i].iov_base, iov[i].iov_len);
+					memcpy(buf + *buf_offset, iov[i].iov_base, iov[i].iov_len);
 				}
-				io_info->buf_pos += iov[i].iov_len;
+				*buf_offset += iov[i].iov_len;
 			}
 			remaining -= iov[i].iov_len;
 		}
@@ -687,10 +701,21 @@ process_bdev_io_completions(struct raid_io_info *io_info)
 }
 
 static void
+xor_block(uint8_t *a, uint8_t *b, size_t size)
+{
+	while (size-- > 0) {
+		a[size] ^= b[size];
+	}
+}
+
+static void
 __test_raid5_submit_rw_request(struct raid_io_info *io_info)
 {
+	struct raid5_info *r5info = io_info->r5info;
 	void *src_buf, *dest_buf;
+	void *parity_buf = NULL;
 	size_t buf_size = io_info->num_blocks * io_info->blocklen;
+	size_t parity_buf_size = r5info->raid_bdev->strip_size * io_info->blocklen;
 	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(io_info->raid_io);
 	uint64_t block;
 
@@ -713,9 +738,10 @@ __test_raid5_submit_rw_request(struct raid_io_info *io_info)
 		io_info->buf = src_buf;
 		bdev_io->iov.iov_base = dest_buf;
 	} else {
-		struct raid5_info *r5info = io_info->r5info;
 		struct stripe *stripe;
 		uint8_t i;
+		uint64_t data_offset;
+		uint64_t parity_offset;
 
 		io_info->buf = dest_buf;
 		bdev_io->iov.iov_base = src_buf;
@@ -729,6 +755,25 @@ __test_raid5_submit_rw_request(struct raid_io_info *io_info)
 				SPDK_CU_ASSERT_FATAL(stripe->chunk_buffers[i] != NULL);
 			}
 		}
+
+		parity_buf = calloc(1, parity_buf_size);
+		SPDK_CU_ASSERT_FATAL(parity_buf != NULL);
+
+		io_info->parity_buf = calloc(1, parity_buf_size);
+		SPDK_CU_ASSERT_FATAL(io_info->parity_buf != NULL);
+
+		data_offset = 0;
+		parity_offset = io_info->stripe_offset_blocks;
+		while (data_offset < io_info->num_blocks) {
+			if (parity_offset == r5info->raid_bdev->strip_size) {
+				parity_offset = 0;
+			}
+			xor_block(parity_buf + (parity_offset * io_info->blocklen),
+				  src_buf + (data_offset * io_info->blocklen),
+				  io_info->blocklen);
+			data_offset++;
+			parity_offset++;
+		}
 	}
 
 	raid5_submit_rw_request(io_info->raid_io);
@@ -737,6 +782,13 @@ __test_raid5_submit_rw_request(struct raid_io_info *io_info)
 
 	CU_ASSERT_EQUAL(io_info->buf_pos, buf_size);
 	CU_ASSERT(memcmp(src_buf, dest_buf, buf_size) == 0);
+
+	if (parity_buf != NULL) {
+		CU_ASSERT(memcmp(parity_buf, io_info->parity_buf, parity_buf_size) == 0);
+
+		free(parity_buf);
+		free(io_info->parity_buf);
+	}
 
 	free(src_buf);
 	free(dest_buf);
