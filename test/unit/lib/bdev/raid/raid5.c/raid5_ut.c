@@ -50,18 +50,49 @@ DEFINE_STUB(rte_hash_del_key_with_hash, int32_t,
 	     const void *key, hash_sig_t sig),
 	    0);
 DEFINE_STUB(rte_hash_hash, hash_sig_t, (const struct rte_hash *h, const void *key), 0);
-DEFINE_STUB(rte_hash_lookup_with_hash_data, int,
-	    (const struct rte_hash *h,
-	     const void *key, hash_sig_t sig, void **data),
-	    -ENOENT);
-DEFINE_STUB(rte_hash_add_key_with_hash_data, int,
-	    (const struct rte_hash *h,
-	     const void *key, hash_sig_t sig, void *data),
-	    0);
 DEFINE_STUB_V(rte_hash_free, (struct rte_hash *h));
-DEFINE_STUB(rte_hash_create, struct rte_hash *, (const struct rte_hash_parameters *params),
-	    (void *)1);
 DEFINE_STUB(spdk_bdev_get_buf_align, size_t, (const struct spdk_bdev *bdev), 0);
+
+struct hash_mock {
+	uint64_t key;
+	void *value;
+};
+
+int
+rte_hash_lookup_with_hash_data(const struct rte_hash *_h,
+			       const void *_key, hash_sig_t sig, void **data)
+{
+	struct hash_mock *h = (struct hash_mock *)_h;
+	uint64_t key = *((uint64_t *)_key);
+
+	if (h->value == NULL || key != h->key) {
+		return -ENOENT;
+	} else {
+		*data = h->value;
+		return 0;
+	}
+}
+
+int
+rte_hash_add_key_with_hash_data(const struct rte_hash *_h,
+				const void *_key, hash_sig_t sig, void *data)
+{
+	struct hash_mock *h = (struct hash_mock *)_h;
+
+	h->key = *((uint64_t *)_key);
+	h->value = data;
+
+	return 0;
+}
+
+struct rte_hash *
+rte_hash_create(const struct rte_hash_parameters *params)
+{
+	static struct hash_mock h;
+
+	h.value = NULL;
+	return (struct rte_hash *)&h;
+}
 
 struct raid5_params {
 	uint8_t num_base_bdevs;
@@ -526,6 +557,8 @@ __test_raid5_handle_stripe(struct raid_io_info *io_info)
 	stripe_req = TAILQ_LAST(&stripe->requests, requests_head);
 	CU_ASSERT(stripe_req != &dummy_req);
 
+	TAILQ_INIT(&stripe->requests);
+
 	CU_ASSERT_EQUAL(stripe_req->parity_chunk->index, p_idx);
 
 	for (i = 0; i < raid_bdev->num_base_bdevs; i++) {
@@ -576,25 +609,40 @@ handle_submit_bdev_io(enum spdk_bdev_io_type io_type,
 	struct raid_io_info *io_info;
 	struct spdk_bdev_io *bdev_io;
 	struct chunk *chunk = cb_arg;
-	size_t remaining;
-	int i;
 
 	SPDK_CU_ASSERT_FATAL(cb == raid5_complete_chunk_request);
 
 	stripe_req = raid5_chunk_stripe_req(chunk);
 	io_info = (struct raid_io_info *)spdk_bdev_io_from_ctx(stripe_req->raid_io);
 
-	remaining = num_blocks * io_info->blocklen;
-	for (i = 0; i < iovcnt; i++) {
-		if (io_type == SPDK_BDEV_IO_TYPE_READ) {
-			memcpy(iov[i].iov_base, io_info->buf + io_info->buf_pos, iov[i].iov_len);
-		} else {
-			memcpy(io_info->buf + io_info->buf_pos, iov[i].iov_base, iov[i].iov_len);
-		}
-		io_info->buf_pos += iov[i].iov_len;
-		remaining -= iov[i].iov_len;
+	if (chunk->request_type == CHUNK_READ ||
+	    chunk->request_type == CHUNK_PREREAD) {
+		CU_ASSERT_EQUAL(io_type, SPDK_BDEV_IO_TYPE_READ);
+	} else if (chunk->request_type == CHUNK_WRITE) {
+		CU_ASSERT_EQUAL(io_type, SPDK_BDEV_IO_TYPE_WRITE);
+	} else {
+		CU_FAIL("Unknown chunk request_type");
 	}
-	CU_ASSERT_EQUAL(remaining, 0);
+
+	if (chunk != stripe_req->parity_chunk) {
+		size_t remaining = num_blocks * io_info->blocklen;
+		int i;
+
+		for (i = 0; i < iovcnt; i++) {
+			if (chunk->request_type == CHUNK_PREREAD) {
+				memset(iov[i].iov_base, 0, iov[i].iov_len);
+			} else {
+				if (io_type == SPDK_BDEV_IO_TYPE_READ) {
+					memcpy(iov[i].iov_base, io_info->buf + io_info->buf_pos, iov[i].iov_len);
+				} else {
+					memcpy(io_info->buf + io_info->buf_pos, iov[i].iov_base, iov[i].iov_len);
+				}
+				io_info->buf_pos += iov[i].iov_len;
+			}
+			remaining -= iov[i].iov_len;
+		}
+		CU_ASSERT_EQUAL(remaining, 0);
+	}
 
 	bdev_io = calloc(1, sizeof(*bdev_io));
 	SPDK_CU_ASSERT_FATAL(bdev_io != NULL);
@@ -663,8 +711,22 @@ __test_raid5_submit_rw_request(struct raid_io_info *io_info)
 		io_info->buf = src_buf;
 		bdev_io->iov.iov_base = dest_buf;
 	} else {
+		struct raid5_info *r5info = io_info->r5info;
+		struct stripe *stripe;
+		uint8_t i;
+
 		io_info->buf = dest_buf;
 		bdev_io->iov.iov_base = src_buf;
+
+		stripe = raid5_get_stripe(r5info, io_info->stripe_idx);
+		SPDK_CU_ASSERT_FATAL(stripe != NULL);
+		for (i = 0; i < r5info->raid_bdev->num_base_bdevs; i++) {
+			if (stripe->chunk_buffers[i] == NULL) {
+				/* will be freed by raid5_free() */
+				stripe->chunk_buffers[i] = malloc(r5info->raid_bdev->strip_size * io_info->blocklen);
+				SPDK_CU_ASSERT_FATAL(stripe->chunk_buffers[i] != NULL);
+			}
+		}
 	}
 
 	raid5_submit_rw_request(io_info->raid_io);

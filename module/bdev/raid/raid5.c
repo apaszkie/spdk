@@ -60,6 +60,9 @@ struct stripe_request {
 	/* Status of the request */
 	enum spdk_bdev_io_status status;
 
+	/* Function to call when all remaining chunk requests have completed */
+	void (*chunk_requests_complete_cb)(struct stripe_request *);
+
 	/* Offset into the parent bdev_io iovecs */
 	uint64_t iov_offset;
 
@@ -86,6 +89,12 @@ struct stripe_request {
 		/* Request blocks count */
 		uint64_t req_blocks;
 
+		/* Preread offset from chunk start */
+		uint64_t preread_offset;
+
+		/* Preread blocks count */
+		uint64_t preread_blocks;
+
 		/* The iovecs associated with the chunk request */
 		struct iovec *iovs;
 
@@ -94,6 +103,13 @@ struct stripe_request {
 
 		/* A single iovec for non-SG buffer request cases */
 		struct iovec iov;
+
+		/* The type of chunk request */
+		enum chunk_request_type {
+			CHUNK_READ,
+			CHUNK_WRITE,
+			CHUNK_PREREAD,
+		} request_type;
 	} chunks[0];
 };
 
@@ -365,40 +381,63 @@ raid5_complete_chunk_request(struct spdk_bdev_io *bdev_io, bool success, void *c
 	}
 
 	if (--stripe_req->remaining == 0) {
-		raid5_complete_stripe_request(stripe_req);
+		if (stripe_req->status == SPDK_BDEV_IO_STATUS_SUCCESS) {
+			stripe_req->chunk_requests_complete_cb(stripe_req);
+		} else {
+			raid5_complete_stripe_request(stripe_req);
+		}
 	}
 }
 
 static void
-raid5_submit_chunk_request(struct chunk *chunk)
+raid5_submit_chunk_request(struct chunk *chunk, enum chunk_request_type type)
 {
 	struct stripe_request *stripe_req = raid5_chunk_stripe_req(chunk);
 	struct raid_bdev_io *raid_io = stripe_req->raid_io;
-	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(raid_io);
 	struct raid_bdev *raid_bdev = raid_io->raid_bdev;
 	struct raid_base_bdev_info *base_info = &raid_bdev->base_bdev_info[chunk->index];
 	struct spdk_io_channel *base_ch = raid_io->raid_ch->base_channel[chunk->index];
+	uint64_t offset_blocks;
+	uint64_t num_blocks;
+	enum spdk_bdev_io_type io_type;
 	uint64_t base_offset_blocks;
 	int ret;
 
 	stripe_req->remaining++;
 
-	base_offset_blocks = (stripe_req->stripe->index << raid_bdev->strip_size_shift) + chunk->req_offset;
+	chunk->request_type = type;
 
-	if (bdev_io->type == SPDK_BDEV_IO_TYPE_READ) {
+	if (chunk->request_type == CHUNK_PREREAD) {
+		offset_blocks = chunk->preread_offset;
+		num_blocks = chunk->preread_blocks;
+		io_type = SPDK_BDEV_IO_TYPE_READ;
+	} else {
+		offset_blocks = chunk->req_offset;
+		num_blocks = chunk->req_blocks;
+		if (chunk->request_type == CHUNK_READ) {
+			io_type = SPDK_BDEV_IO_TYPE_READ;
+		} else if (chunk->request_type == CHUNK_WRITE) {
+			io_type = SPDK_BDEV_IO_TYPE_WRITE;
+		} else {
+			assert(false);
+			return;
+		}
+	}
+
+	base_offset_blocks = (stripe_req->stripe->index << raid_bdev->strip_size_shift) + offset_blocks;
+
+	if (io_type == SPDK_BDEV_IO_TYPE_READ) {
 		ret = spdk_bdev_readv_blocks(base_info->desc, base_ch,
 					     chunk->iovs, chunk->iovcnt,
-					     base_offset_blocks, chunk->req_blocks,
+					     base_offset_blocks, num_blocks,
 					     raid5_complete_chunk_request,
 					     chunk);
-	} else if (bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE) {
+	} else {
 		ret = spdk_bdev_writev_blocks(base_info->desc, base_ch,
 					      chunk->iovs, chunk->iovcnt,
-					      base_offset_blocks, chunk->req_blocks,
+					      base_offset_blocks, num_blocks,
 					      raid5_complete_chunk_request,
 					      chunk);
-	} else {
-		assert(false);
 	}
 
 	if (spdk_unlikely(ret != 0)) {
@@ -408,12 +447,14 @@ raid5_submit_chunk_request(struct chunk *chunk)
 }
 
 static void
-raid5_submit_stripe_request(struct stripe_request *stripe_req)
+raid5_stripe_write_preread_complete(struct stripe_request *stripe_req)
 {
 	struct chunk *chunk;
 	int ret;
 
-	/* TODO: update parity for writes */
+	stripe_req->chunk_requests_complete_cb = raid5_complete_stripe_request;
+
+	/* TODO: update parity */
 
 	FOR_EACH_DATA_CHUNK(stripe_req, chunk) {
 		if (chunk->req_blocks > 0) {
@@ -423,8 +464,105 @@ raid5_submit_stripe_request(struct stripe_request *stripe_req)
 				return;
 			}
 
-			raid5_submit_chunk_request(chunk);
+			raid5_submit_chunk_request(chunk, CHUNK_WRITE);
 		}
+	}
+}
+
+static void
+raid5_stripe_write(struct stripe_request *stripe_req)
+{
+	struct raid_bdev *raid_bdev = stripe_req->raid_io->raid_bdev;
+	struct chunk *p_chunk = stripe_req->parity_chunk;
+	struct chunk *chunk;
+
+	stripe_req->chunk_requests_complete_cb = raid5_stripe_write_preread_complete;
+
+	if (stripe_req->first_data_chunk == stripe_req->last_data_chunk) {
+		p_chunk->req_offset = stripe_req->first_data_chunk->req_offset;
+		p_chunk->req_blocks = stripe_req->first_data_chunk->req_blocks;
+	} else {
+		p_chunk->req_offset = 0;
+		p_chunk->req_blocks = raid_bdev->strip_size;
+	}
+
+	FOR_EACH_CHUNK(stripe_req, chunk) {
+		if (chunk == p_chunk) {
+			chunk->preread_offset = 0;
+			chunk->preread_blocks = 0;
+		} else if (stripe_req->first_data_chunk == stripe_req->last_data_chunk) {
+			if (chunk->req_blocks) {
+				chunk->preread_offset = 0;
+				chunk->preread_blocks = 0;
+			} else {
+				chunk->preread_offset = p_chunk->req_offset;
+				chunk->preread_blocks = p_chunk->req_blocks;
+			}
+		} else {
+			if (chunk->req_offset) {
+				chunk->preread_offset = 0;
+				chunk->preread_blocks = chunk->req_offset;
+			} else {
+				chunk->preread_offset = chunk->req_blocks;
+				chunk->preread_blocks = raid_bdev->strip_size - chunk->req_blocks;
+			}
+		}
+
+		if (chunk->preread_blocks || chunk == p_chunk) {
+			size_t len;
+
+			if (chunk == p_chunk) {
+				len = chunk->req_blocks * raid_bdev->bdev.blocklen;
+			} else {
+				len = chunk->preread_blocks * raid_bdev->bdev.blocklen;
+			}
+
+			chunk->iov.iov_base = stripe_req->stripe->chunk_buffers[chunk->index];
+			chunk->iov.iov_len = len;
+		}
+
+		if (chunk->preread_blocks) {
+			raid5_submit_chunk_request(chunk, CHUNK_PREREAD);
+		}
+	}
+
+	if (stripe_req->remaining == 0) {
+		stripe_req->chunk_requests_complete_cb(stripe_req);
+	}
+}
+
+static void
+raid5_stripe_read(struct stripe_request *stripe_req)
+{
+	struct chunk *chunk;
+	int ret;
+
+	stripe_req->chunk_requests_complete_cb = raid5_complete_stripe_request;
+
+	FOR_EACH_DATA_CHUNK(stripe_req, chunk) {
+		if (chunk->req_blocks > 0) {
+			ret = raid5_chunk_map_req_data(chunk);
+			if (ret) {
+				raid5_abort_stripe_request(stripe_req, errno_to_status(ret));
+				return;
+			}
+
+			raid5_submit_chunk_request(chunk, CHUNK_READ);
+		}
+	}
+}
+
+static void
+raid5_submit_stripe_request(struct stripe_request *stripe_req)
+{
+	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(stripe_req->raid_io);
+
+	if (bdev_io->type == SPDK_BDEV_IO_TYPE_READ) {
+		raid5_stripe_read(stripe_req);
+	} else if (bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE) {
+		raid5_stripe_write(stripe_req);
+	} else {
+		assert(false);
 	}
 }
 
