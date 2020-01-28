@@ -228,6 +228,15 @@ struct raid_bdev_io_channel {
 	uint8_t			num_channels;
 };
 
+/*
+ * Get the resource allocated with the raid bdev IO channel.
+ */
+static inline void *
+raid_bdev_io_channel_get_resource(struct raid_bdev_io_channel *raid_ch)
+{
+	return (uint8_t *)raid_ch + sizeof(*raid_ch);
+}
+
 /* TAIL heads for various raid bdev lists */
 TAILQ_HEAD(raid_configured_tailq, raid_bdev);
 TAILQ_HEAD(raid_configuring_tailq, raid_bdev);
@@ -271,6 +280,9 @@ struct raid_bdev_module {
 	 */
 	uint8_t base_bdevs_max_degraded;
 
+	/* Size of the additional resource allocated per IO channel context. */
+	size_t io_channel_resource_size;
+
 	/*
 	 * Called when the raid is starting, right before changing the state to
 	 * online and registering the bdev. Parameters of the bdev like blockcnt
@@ -291,6 +303,18 @@ struct raid_bdev_module {
 
 	/* Handler for requests without payload (flush, unmap). Optional. */
 	void (*submit_null_payload_request)(struct raid_bdev_io *raid_io);
+
+	/*
+	 * Callback to initialize the per IO channel resource.
+	 * Called when the bdev's IO channel is created. Optional.
+	 */
+	int (*io_channel_resource_init)(struct raid_bdev *raid_bdev, void *resource);
+
+	/*
+	 * Callback to deinitialize the per IO channel resource.
+	 * Called when the bdev's IO channel is destroyed. Optional.
+	 */
+	void (*io_channel_resource_deinit)(struct raid_bdev *raid_bdev, void *resource);
 
 	TAILQ_ENTRY(raid_bdev_module) link;
 };
