@@ -61,6 +61,7 @@ DEFINE_STUB(rte_hash_add_key_with_hash_data, int,
 DEFINE_STUB_V(rte_hash_free, (struct rte_hash *h));
 DEFINE_STUB(rte_hash_create, struct rte_hash *, (const struct rte_hash_parameters *params),
 	    (void *)1);
+DEFINE_STUB(spdk_bdev_get_buf_align, size_t, (const struct spdk_bdev *bdev), 0);
 
 struct raid5_params {
 	uint8_t num_base_bdevs;
@@ -177,10 +178,31 @@ static struct raid5_info *
 create_raid5(struct raid5_params *params)
 {
 	struct raid_bdev *raid_bdev = create_raid_bdev(params);
+	struct raid5_info *r5info;
+	unsigned int i;
+	int ret;
 
-	SPDK_CU_ASSERT_FATAL(raid5_start(raid_bdev) == 0);
+	/* mock chunk buffers allocation */
+	MOCK_SET(spdk_dma_malloc, (void *)1);
 
-	return raid_bdev->module_private;
+	ret = raid5_start(raid_bdev);
+
+	MOCK_CLEAR(spdk_dma_malloc);
+
+	SPDK_CU_ASSERT_FATAL(ret == 0);
+
+	r5info = raid_bdev->module_private;
+
+	for (i = 0; i < RAID5_MAX_STRIPES; i++) {
+		uint8_t j;
+
+		for (j = 0; j < params->num_base_bdevs; j++) {
+			/* don't try to free the mock chunk buffers */
+			r5info->stripes[i].chunk_buffers[j] = NULL;
+		}
+	}
+
+	return r5info;
 }
 
 static void

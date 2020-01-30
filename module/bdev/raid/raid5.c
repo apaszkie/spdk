@@ -115,6 +115,9 @@ struct stripe {
 
 	/* Link for the active/free stripes lists */
 	TAILQ_ENTRY(stripe) link;
+
+	/* Array of buffers for chunk parity/preread data */
+	void **chunk_buffers;
 };
 
 struct raid5_info {
@@ -597,6 +600,54 @@ raid5_submit_rw_request(struct raid_bdev_io *raid_io)
 	raid5_handle_stripe(raid_io, stripe, stripe_offset, num_blocks, 0);
 }
 
+static int
+raid5_stripe_init(struct stripe *stripe, struct raid_bdev *raid_bdev)
+{
+	uint8_t i;
+
+	stripe->chunk_buffers = calloc(raid_bdev->num_base_bdevs, sizeof(void *));
+	if (!stripe->chunk_buffers) {
+		SPDK_ERRLOG("Failed to allocate chunk buffers array\n");
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < raid_bdev->num_base_bdevs; i++) {
+		void *buf;
+
+		buf = spdk_dma_malloc(raid_bdev->strip_size * raid_bdev->bdev.blocklen,
+				      spdk_max(spdk_bdev_get_buf_align(raid_bdev->base_bdev_info[i].bdev), 32),
+				      NULL);
+		if (!buf) {
+			SPDK_ERRLOG("Failed to allocate chunk buffer\n");
+			for (; i > 0; --i) {
+				spdk_dma_free(stripe->chunk_buffers[i]);
+			}
+			free(stripe->chunk_buffers);
+			return -ENOMEM;
+		}
+
+		stripe->chunk_buffers[i] = buf;
+	}
+
+	TAILQ_INIT(&stripe->requests);
+	pthread_spin_init(&stripe->requests_lock, PTHREAD_PROCESS_PRIVATE);
+
+	return 0;
+}
+
+static void
+raid5_stripe_deinit(struct stripe *stripe, struct raid_bdev *raid_bdev)
+{
+	uint8_t i;
+
+	for (i = 0; i < raid_bdev->num_base_bdevs; i++) {
+		spdk_dma_free(stripe->chunk_buffers[i]);
+	}
+	free(stripe->chunk_buffers);
+
+	pthread_spin_destroy(&stripe->requests_lock);
+}
+
 static void
 raid5_free(struct raid5_info *r5info)
 {
@@ -614,7 +665,7 @@ raid5_free(struct raid5_info *r5info)
 
 	if (r5info->stripes) {
 		for (i = 0; i < RAID5_MAX_STRIPES; i++) {
-			pthread_spin_destroy(&r5info->stripes[i].requests_lock);
+			raid5_stripe_deinit(&r5info->stripes[i], r5info->raid_bdev);
 		}
 		free(r5info->stripes);
 	}
@@ -665,8 +716,15 @@ raid5_start(struct raid_bdev *raid_bdev)
 	for (i = 0; i < RAID5_MAX_STRIPES; i++) {
 		struct stripe *stripe = &r5info->stripes[i];
 
-		TAILQ_INIT(&stripe->requests);
-		pthread_spin_init(&stripe->requests_lock, PTHREAD_PROCESS_PRIVATE);
+		ret = raid5_stripe_init(stripe, raid_bdev);
+		if (ret) {
+			for (; i > 0; --i) {
+				raid5_stripe_deinit(&r5info->stripes[i], raid_bdev);
+			}
+			free(r5info->stripes);
+			r5info->stripes = NULL;
+			goto out;
+		}
 
 		TAILQ_INSERT_TAIL(&r5info->free_stripes, stripe, link);
 	}
