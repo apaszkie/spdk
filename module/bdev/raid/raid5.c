@@ -110,6 +110,9 @@ struct stripe_request {
 			CHUNK_WRITE,
 			CHUNK_PREREAD,
 		} request_type;
+
+		/* For retrying base bdev IOs in case submit fails with -ENOMEM */
+		struct spdk_bdev_io_wait_entry waitq_entry;
 	} chunks[0];
 };
 
@@ -390,8 +393,9 @@ raid5_complete_chunk_request(struct spdk_bdev_io *bdev_io, bool success, void *c
 }
 
 static void
-raid5_submit_chunk_request(struct chunk *chunk, enum chunk_request_type type)
+_raid5_submit_chunk_request(void *_chunk)
 {
+	struct chunk *chunk = _chunk;
 	struct stripe_request *stripe_req = raid5_chunk_stripe_req(chunk);
 	struct raid_bdev_io *raid_io = stripe_req->raid_io;
 	struct raid_bdev *raid_bdev = raid_io->raid_bdev;
@@ -402,10 +406,6 @@ raid5_submit_chunk_request(struct chunk *chunk, enum chunk_request_type type)
 	enum spdk_bdev_io_type io_type;
 	uint64_t base_offset_blocks;
 	int ret;
-
-	stripe_req->remaining++;
-
-	chunk->request_type = type;
 
 	if (chunk->request_type == CHUNK_PREREAD) {
 		offset_blocks = chunk->preread_offset;
@@ -441,9 +441,30 @@ raid5_submit_chunk_request(struct chunk *chunk, enum chunk_request_type type)
 	}
 
 	if (spdk_unlikely(ret != 0)) {
-		/* TODO: handle this */
-		assert(false);
+		if (ret == -ENOMEM) {
+			struct spdk_bdev_io_wait_entry *wqe = &chunk->waitq_entry;
+
+			wqe->bdev = base_info->bdev;
+			wqe->cb_fn = _raid5_submit_chunk_request;
+			wqe->cb_arg = chunk;
+			spdk_bdev_queue_io_wait(base_info->bdev, base_ch, wqe);
+		} else {
+			SPDK_ERRLOG("bdev io submit error not due to ENOMEM, it should not happen\n");
+			assert(false);
+		}
 	}
+}
+
+static void
+raid5_submit_chunk_request(struct chunk *chunk, enum chunk_request_type type)
+{
+	struct stripe_request *stripe_req = raid5_chunk_stripe_req(chunk);
+
+	stripe_req->remaining++;
+
+	chunk->request_type = type;
+
+	_raid5_submit_chunk_request(chunk);
 }
 
 static void

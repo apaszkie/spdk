@@ -52,6 +52,8 @@ DEFINE_STUB(rte_hash_del_key_with_hash, int32_t,
 DEFINE_STUB(rte_hash_hash, hash_sig_t, (const struct rte_hash *h, const void *key), 0);
 DEFINE_STUB_V(rte_hash_free, (struct rte_hash *h));
 DEFINE_STUB(spdk_bdev_get_buf_align, size_t, (const struct spdk_bdev *bdev), 0);
+DEFINE_STUB(spdk_bdev_queue_io_wait, int, (struct spdk_bdev *bdev, struct spdk_io_channel *ch,
+		struct spdk_bdev_io_wait_entry *entry), 0);
 
 struct hash_mock {
 	uint64_t key;
