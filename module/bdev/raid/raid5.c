@@ -722,6 +722,7 @@ static void
 raid5_handle_stripe(struct raid_bdev_io *raid_io, struct stripe *stripe,
 		    uint64_t stripe_offset, uint64_t blocks, uint64_t iov_offset)
 {
+	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(raid_io);
 	struct raid_bdev *raid_bdev = raid_io->raid_bdev;
 	struct raid5_info *r5info = raid_bdev->module_private;
 	struct stripe_request *stripe_req;
@@ -729,6 +730,24 @@ raid5_handle_stripe(struct raid_bdev_io *raid_io, struct stripe *stripe,
 	uint64_t stripe_offset_from, stripe_offset_to;
 	uint8_t first_chunk_data_idx, last_chunk_data_idx;
 	bool do_submit;
+
+	if (raid_io->base_bdev_io_remaining == blocks &&
+	    bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE &&
+	    blocks < raid_bdev->strip_size) {
+		/*
+		 * Split in 2 smaller requests if this request would require
+		 * a non-contiguous parity chunk update
+		 */
+		uint64_t blocks_limit = raid_bdev->strip_size -
+					(stripe_offset % raid_bdev->strip_size);
+		if (blocks > blocks_limit) {
+			raid5_handle_stripe(raid_io, stripe, stripe_offset,
+					    blocks_limit, iov_offset);
+			blocks -= blocks_limit;
+			stripe_offset += blocks_limit;
+			iov_offset += blocks_limit * raid_bdev->bdev.blocklen;
+		}
+	}
 
 	stripe_req = spdk_mempool_get(r5info->stripe_request_mempool);
 	if (spdk_unlikely(!stripe_req)) {

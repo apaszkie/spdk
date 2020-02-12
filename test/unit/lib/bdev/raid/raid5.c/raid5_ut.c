@@ -54,6 +54,8 @@ DEFINE_STUB_V(rte_hash_free, (struct rte_hash *h));
 DEFINE_STUB(spdk_bdev_get_buf_align, size_t, (const struct spdk_bdev *bdev), 0);
 DEFINE_STUB(spdk_bdev_queue_io_wait, int, (struct spdk_bdev *bdev, struct spdk_io_channel *ch,
 		struct spdk_bdev_io_wait_entry *entry), 0);
+DEFINE_STUB(spdk_io_channel_from_ctx, struct spdk_io_channel *, (void *ctx), NULL);
+DEFINE_STUB(spdk_io_channel_get_thread, struct spdk_thread *, (struct spdk_io_channel *ch), NULL);
 
 struct hash_mock {
 	uint64_t key;
@@ -94,6 +96,13 @@ rte_hash_create(const struct rte_hash_parameters *params)
 
 	h.value = NULL;
 	return (struct rte_hash *)&h;
+}
+
+int
+spdk_thread_send_msg(const struct spdk_thread *thread, spdk_msg_fn fn, void *ctx)
+{
+	fn(ctx);
+	return 0;
 }
 
 struct raid5_params {
@@ -491,6 +500,7 @@ run_for_each_raid_io(void (*test_fn)(struct raid_io_info *))
 			{ params->strip_size - 1, 1 },
 			{ params->strip_size - 1, params->strip_size },
 			{ params->strip_size - 1, params->strip_size + 1 },
+			{ params->strip_size - 1, 2 },
 		};
 		struct raid5_info *r5info;
 		struct raid_bdev_io_channel raid_ch;
