@@ -177,8 +177,6 @@ single_reloc_move(struct ftl_band_reloc *breloc)
 {
 	/* Process read */
 	ftl_process_reloc(breloc);
-	/* Process lba map read */
-	ftl_process_reloc(breloc);
 	/* Process write */
 	ftl_process_reloc(breloc);
 }
@@ -340,8 +338,8 @@ test_reloc_full_band(void)
 
 	CU_ASSERT_EQUAL(breloc->num_blocks, ftl_get_num_blocks_in_band(dev));
 
-	ftl_reloc_prep(breloc);
-	add_to_active_queue(reloc, breloc);
+	ftl_reloc_prepare(breloc);
+	ftl_reloc_activate(breloc);
 
 	for (i = 1; i <= num_iters; ++i) {
 		single_reloc_move(breloc);
@@ -384,7 +382,7 @@ test_reloc_scatter_band(void)
 	}
 
 	ftl_reloc_add(reloc, band, 0, ftl_get_num_blocks_in_band(dev), 0, true);
-	ftl_reloc_prep(breloc);
+	ftl_reloc_prepare(breloc);
 	add_to_active_queue(reloc, breloc);
 
 	CU_ASSERT_EQUAL(breloc->num_blocks, ftl_get_num_blocks_in_band(dev));
@@ -464,7 +462,7 @@ test_reloc_single_block(void)
 
 	ftl_reloc_add(reloc, band, TEST_RELOC_OFFSET, 1, 0, false);
 	SPDK_CU_ASSERT_FATAL(breloc == TAILQ_FIRST(&reloc->pending_queue));
-	ftl_reloc_prep(breloc);
+	ftl_reloc_prepare(breloc);
 	add_to_active_queue(reloc, breloc);
 
 	CU_ASSERT_EQUAL(breloc->num_blocks, 1);
