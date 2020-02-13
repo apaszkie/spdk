@@ -48,7 +48,6 @@ struct ftl_reloc;
 struct ftl_band_reloc;
 
 enum ftl_reloc_move_state {
-	FTL_RELOC_STATE_READ_LBA_MAP,
 	FTL_RELOC_STATE_READ,
 	FTL_RELOC_STATE_WRITE,
 };
@@ -189,51 +188,61 @@ ftl_reloc_clr_block(struct ftl_band_reloc *breloc, size_t block_off)
 }
 
 static void
-ftl_reloc_read_lba_map_cb(struct ftl_io *io, void *arg, int status)
+ftl_reloc_activate(struct ftl_band_reloc *breloc)
 {
-	struct ftl_reloc_move *move = arg;
-	struct ftl_band_reloc *breloc = move->breloc;
-
-	breloc->num_outstanding--;
-	assert(status == 0);
-	move->state = FTL_RELOC_STATE_WRITE;
-	STAILQ_INSERT_TAIL(&breloc->move_queue, move, entry);
-}
-
-static int
-ftl_reloc_read_lba_map(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move)
-{
-	struct ftl_band *band = breloc->band;
-
-	breloc->num_outstanding++;
-	return ftl_band_read_lba_map(band, ftl_band_block_offset_from_addr(band, move->addr),
-				     move->num_blocks, ftl_reloc_read_lba_map_cb, move);
-}
-
-static void
-ftl_reloc_prep(struct ftl_band_reloc *breloc)
-{
-	struct ftl_band *band = breloc->band;
 	struct ftl_reloc *reloc = breloc->parent;
 	struct ftl_reloc_move *move;
 	size_t i;
-
-	reloc->num_active++;
-
-	if (!band->high_prio) {
-		if (ftl_band_alloc_lba_map(band)) {
-			SPDK_ERRLOG("Failed to allocate lba map\n");
-			assert(false);
-		}
-	} else {
-		ftl_band_acquire_lba_map(band);
-	}
 
 	for (i = 0; i < reloc->max_qdepth; ++i) {
 		move = &breloc->moves[i];
 		move->state = FTL_RELOC_STATE_READ;
 		STAILQ_INSERT_TAIL(&breloc->move_queue, move, entry);
 	}
+
+	breloc->state = FTL_BAND_RELOC_STATE_ACTIVE;
+	TAILQ_INSERT_HEAD(&reloc->active_queue, breloc, entry);
+}
+
+static void
+ftl_reloc_read_lba_map_cb(struct ftl_io *io, void *arg, int status)
+{
+	struct ftl_band_reloc *breloc = arg;
+
+	assert(status == 0);
+
+	breloc->num_outstanding--;
+	ftl_reloc_activate(breloc);
+}
+
+static int
+ftl_reloc_read_lba_map(struct ftl_band_reloc *breloc)
+{
+	struct ftl_band *band = breloc->band;
+
+	if (ftl_band_alloc_lba_map(band)) {
+		return -ENOMEM;
+	}
+
+	breloc->num_outstanding++;
+	return ftl_band_read_lba_map(band, 0, ftl_get_num_blocks_in_band(band->dev),
+				     ftl_reloc_read_lba_map_cb, breloc);
+}
+
+static int
+ftl_reloc_prepare(struct ftl_band_reloc *breloc)
+{
+	struct ftl_band *band = breloc->band;
+	int rc = 0;
+
+	if (!band->high_prio) {
+		rc = ftl_reloc_read_lba_map(breloc);
+	} else {
+		ftl_band_acquire_lba_map(band);
+		ftl_reloc_activate(breloc);
+	}
+
+	return rc;
 }
 
 static void
@@ -288,7 +297,7 @@ ftl_reloc_read_cb(struct ftl_io *io, void *arg, int status)
 		return;
 	}
 
-	move->state = FTL_RELOC_STATE_READ_LBA_MAP;
+	move->state = FTL_RELOC_STATE_WRITE;
 	move->io = NULL;
 	STAILQ_INSERT_TAIL(&breloc->move_queue, move, entry);
 }
@@ -537,9 +546,6 @@ ftl_reloc_process_moves(struct ftl_band_reloc *breloc)
 		STAILQ_REMOVE_HEAD(&move_queue, entry);
 
 		switch (move->state) {
-		case FTL_RELOC_STATE_READ_LBA_MAP:
-			rc = ftl_reloc_read_lba_map(breloc, move);
-			break;
 		case FTL_RELOC_STATE_READ:
 			rc = ftl_reloc_read(breloc, move);
 			break;
@@ -773,11 +779,16 @@ ftl_reloc(struct ftl_reloc *reloc)
 			continue;
 		}
 
-		ftl_reloc_prep(breloc);
 		assert(breloc->state == FTL_BAND_RELOC_STATE_PENDING);
 		TAILQ_REMOVE(&reloc->pending_queue, breloc, entry);
-		breloc->state = FTL_BAND_RELOC_STATE_ACTIVE;
-		TAILQ_INSERT_HEAD(&reloc->active_queue, breloc, entry);
+
+		/* If reloc preparation fails due to lack of resources try again later */
+		if (ftl_reloc_prepare(breloc)) {
+			TAILQ_INSERT_HEAD(&reloc->pending_queue, breloc, entry);
+			break;
+		}
+
+		reloc->num_active++;
 	}
 
 	TAILQ_FOREACH_SAFE(breloc, &reloc->active_queue, entry, tbreloc) {
@@ -854,7 +865,12 @@ ftl_reloc_add(struct ftl_reloc *reloc, struct ftl_band *band, size_t offset,
 		 * resources
 		 */
 		if (!active) {
-			ftl_reloc_prep(breloc);
+			if (ftl_reloc_prepare(breloc)) {
+				SPDK_ERRLOG("Failed to prepare relocation for high prio band\n");
+				assert(false);
+			}
+
+			reloc->num_active++;
 		}
 	}
 }
