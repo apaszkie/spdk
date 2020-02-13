@@ -68,11 +68,18 @@ static int bdev_ftl_initialize(void);
 static void bdev_ftl_finish(void);
 static void bdev_ftl_examine(struct spdk_bdev *bdev);
 
+static int
+bdev_ftl_get_ctx_size(void)
+{
+	return spdk_ftl_io_size();
+}
+
 static struct spdk_bdev_module g_ftl_if = {
 	.name		= "ftl",
 	.module_init	= bdev_ftl_initialize,
 	.module_fini	= bdev_ftl_finish,
 	.examine_disk	= bdev_ftl_examine,
+	.get_ctx_size	= bdev_ftl_get_ctx_size,
 };
 
 SPDK_BDEV_MODULE_REGISTER(ftl, &g_ftl_if)
@@ -132,7 +139,7 @@ bdev_ftl_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
 		return;
 	}
 
-	rc = spdk_ftl_read(ftl_bdev->dev,
+	rc = spdk_ftl_read(ftl_bdev->dev, (struct ftl_io *)bdev_io->driver_ctx,
 			   ch,
 			   bdev_io->u.bdev.offset_blocks,
 			   bdev_io->u.bdev.num_blocks,
@@ -155,7 +162,8 @@ _bdev_ftl_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_i
 		return 0;
 
 	case SPDK_BDEV_IO_TYPE_WRITE:
-		return spdk_ftl_write(ftl_bdev->dev, ch, bdev_io->u.bdev.offset_blocks,
+		return spdk_ftl_write(ftl_bdev->dev, (struct ftl_io *)bdev_io->driver_ctx,
+				      ch, bdev_io->u.bdev.offset_blocks,
 				      bdev_io->u.bdev.num_blocks, bdev_io->u.bdev.iovs,
 				      bdev_io->u.bdev.iovcnt, bdev_ftl_cb, bdev_io);
 

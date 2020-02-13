@@ -343,9 +343,9 @@ size_t ftl_io_iovec_len_left(struct ftl_io *io);
 struct ftl_io *ftl_io_wbuf_init(struct spdk_ftl_dev *dev, struct ftl_addr addr,
 				struct ftl_band *band, struct ftl_batch *batch, ftl_io_fn cb);
 struct ftl_io *ftl_io_erase_init(struct ftl_band *band, size_t num_blocks, ftl_io_fn cb);
-struct ftl_io *ftl_io_user_init(struct spdk_io_channel *ioch, uint64_t lba, size_t num_blocks,
-				struct iovec *iov, size_t iov_cnt, spdk_ftl_fn cb_fn,
-				void *cb_arg, int type);
+int ftl_io_user_init(struct spdk_io_channel *ioch, struct ftl_io *io, uint64_t lba,
+		     size_t num_blocks, struct iovec *iov, size_t iov_cnt, spdk_ftl_fn cb_fn,
+		     void *cb_arg, int type);
 void *ftl_io_get_md(const struct ftl_io *io);
 void ftl_io_complete(struct ftl_io *io);
 void ftl_io_shrink_iovec(struct ftl_io *io, size_t num_blocks);

@@ -345,17 +345,19 @@ _ftl_user_cb(struct ftl_io *io, void *arg, int status)
 	io->user_fn(arg, status);
 }
 
-struct ftl_io *
-ftl_io_user_init(struct spdk_io_channel *_ioch, uint64_t lba, size_t num_blocks, struct iovec *iov,
-		 size_t iov_cnt, spdk_ftl_fn cb_fn, void *cb_ctx, int type)
+int
+ftl_io_user_init(struct spdk_io_channel *_ioch, struct ftl_io *io, uint64_t lba, size_t num_blocks,
+		 struct iovec *iov, size_t iov_cnt, spdk_ftl_fn cb_fn, void *cb_ctx, int type)
 {
 	struct ftl_io_channel *ioch = ftl_io_channel_get_ctx(_ioch);
 	struct spdk_ftl_dev *dev = ioch->dev;
-	struct ftl_io *io;
 
-	io = ftl_io_alloc(_ioch);
-	if (spdk_unlikely(!io)) {
-		return NULL;
+	memset(io, 0, sizeof(struct ftl_io));
+	io->ioch = _ioch;
+
+	if (pthread_spin_init(&io->lock, PTHREAD_PROCESS_PRIVATE)) {
+		SPDK_ERRLOG("pthread_spin_init failed\n");
+		return -ENOMEM;
 	}
 
 	ftl_io_init(io, dev, _ftl_user_cb, cb_ctx, 0, type);
@@ -366,7 +368,7 @@ ftl_io_user_init(struct spdk_io_channel *_ioch, uint64_t lba, size_t num_blocks,
 	io->num_blocks = num_blocks;
 
 	ftl_trace_lba_io_init(io->dev, io);
-	return io;
+	return 0;
 }
 
 static void
@@ -384,8 +386,10 @@ _ftl_io_free(struct ftl_io *io)
 		SPDK_ERRLOG("pthread_spin_destroy failed\n");
 	}
 
-	ioch = ftl_io_channel_get_ctx(io->ioch);
-	spdk_mempool_put(ioch->io_pool, io);
+	if (io->flags & FTL_IO_INTERNAL) {
+		ioch = ftl_io_channel_get_ctx(io->ioch);
+		spdk_mempool_put(ioch->io_pool, io);
+	}
 }
 
 static bool

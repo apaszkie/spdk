@@ -159,6 +159,7 @@ setup_io(struct ftl_io *io, struct spdk_ftl_dev *dev, ftl_io_fn cb, void *ctx)
 	io->dev = dev;
 	io->cb_fn = cb;
 	io->cb_ctx = ctx;
+	io->flags = FTL_IO_INTERNAL;
 }
 
 static struct ftl_io *
