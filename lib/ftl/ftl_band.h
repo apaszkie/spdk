@@ -173,7 +173,7 @@ struct ftl_band {
 	/* Number of open bands containing data moved from this band */
 	size_t					num_reloc_bands;
 	/* Number of blocks currently being moved from this band */
-	size_t					num_reloc_blocks;
+	int					num_reloc_blocks;
 
 	/* Free/shut bands' lists */
 	LIST_ENTRY(ftl_band)			list_entry;
