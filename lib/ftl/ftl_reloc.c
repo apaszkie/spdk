@@ -59,8 +59,30 @@ enum ftl_band_reloc_state {
 	FTL_BAND_RELOC_STATE_HIGH_PRIO
 };
 
+struct ftl_reloc_task {
+	/* Parent */
+	struct ftl_reloc			*reloc;
+
+	/* Thread on which relocation task is running */
+	struct spdk_thread			*thread;
+	/* IO channel for relocation reads/writes */
+	struct spdk_io_channel			*ioch;
+	/* Poller with movement logic */
+	struct spdk_poller			*poller;
+
+	/* Queue of moves that task is processing */
+	struct spdk_ring			*move_queue;
+
+	/* Read/write buffer pool */
+	struct spdk_mempool			*buffer_pool;
+
+	STAILQ_ENTRY(ftl_reloc_task)		entry;
+};
+
 struct ftl_reloc_move {
 	struct ftl_band_reloc			*breloc;
+
+	struct ftl_reloc_task			*task;
 
 	/* Start addr */
 	struct ftl_addr				addr;
@@ -71,7 +93,7 @@ struct ftl_reloc_move {
 	/* Data buffer */
 	void					*data;
 
-	/* Move state (read lba_map, read, write) */
+	/* Move state (read, write) */
 	enum ftl_reloc_move_state		state;
 
 	/* IO associated with move */
@@ -110,12 +132,6 @@ struct ftl_band_reloc {
 	/* Number of outstanding moves */
 	size_t					num_outstanding;
 
-	/* Pool of move objects */
-	struct ftl_reloc_move			*moves;
-
-	/* Move queue */
-	STAILQ_HEAD(, ftl_reloc_move)		move_queue;
-
 	TAILQ_ENTRY(ftl_band_reloc)		entry;
 };
 
@@ -143,6 +159,13 @@ struct ftl_reloc {
 	/* Number of active/priority band relocates */
 	size_t					num_active;
 
+	/* Queue of free move objects */
+	struct ftl_reloc_move			*move_buffer;
+	STAILQ_HEAD(, ftl_reloc_move)		free_move_queue;
+
+	/* Move completion queue */
+	struct spdk_ring			*move_cmpl_queue;
+
 	/* Priority band relocates queue */
 	TAILQ_HEAD(, ftl_band_reloc)		prio_queue;
 
@@ -151,6 +174,9 @@ struct ftl_reloc {
 
 	/* Pending band relocates queue */
 	TAILQ_HEAD(, ftl_band_reloc)		pending_queue;
+
+	/* Queue of relocation tasks running on different threads */
+	STAILQ_HEAD(, ftl_reloc_task)		task_queue;
 };
 
 bool
@@ -191,14 +217,6 @@ static void
 ftl_reloc_activate(struct ftl_band_reloc *breloc)
 {
 	struct ftl_reloc *reloc = breloc->parent;
-	struct ftl_reloc_move *move;
-	size_t i;
-
-	for (i = 0; i < reloc->max_qdepth; ++i) {
-		move = &breloc->moves[i];
-		move->state = FTL_RELOC_STATE_READ;
-		STAILQ_INSERT_TAIL(&breloc->move_queue, move, entry);
-	}
 
 	breloc->state = FTL_BAND_RELOC_STATE_ACTIVE;
 	TAILQ_INSERT_HEAD(&reloc->active_queue, breloc, entry);
@@ -211,7 +229,6 @@ ftl_reloc_read_lba_map_cb(struct ftl_io *io, void *arg, int status)
 
 	assert(status == 0);
 
-	breloc->num_outstanding--;
 	ftl_reloc_activate(breloc);
 }
 
@@ -224,7 +241,6 @@ ftl_reloc_read_lba_map(struct ftl_band_reloc *breloc)
 		return -ENOMEM;
 	}
 
-	breloc->num_outstanding++;
 	return ftl_band_read_lba_map(band, 0, ftl_get_num_blocks_in_band(band->dev),
 				     ftl_reloc_read_lba_map_cb, breloc);
 }
@@ -246,47 +262,27 @@ ftl_reloc_prepare(struct ftl_band_reloc *breloc)
 }
 
 static void
-ftl_reloc_free_move(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move)
-{
-	assert(move);
-	spdk_dma_free(move->data);
-	memset(move, 0, sizeof(*move));
-	move->state = FTL_RELOC_STATE_READ;
-}
-
-static void
 ftl_reloc_write_cb(struct ftl_io *io, void *arg, int status)
 {
 	struct ftl_reloc_move *move = arg;
-	struct ftl_addr addr = move->addr;
 	struct ftl_band_reloc *breloc = move->breloc;
-	size_t i;
+	struct ftl_reloc *reloc = breloc->parent;
 
-	breloc->num_outstanding--;
+	spdk_mempool_put(move->task->buffer_pool, move->data);
+	spdk_ring_enqueue(reloc->move_cmpl_queue, (void **)&move, 1, NULL);
 
 	if (status) {
 		SPDK_ERRLOG("Reloc write failed with status: %d\n", status);
 		assert(false);
 		return;
 	}
-
-	for (i = 0; i < move->num_blocks; ++i) {
-		addr.offset = move->addr.offset + i;
-		size_t block_off = ftl_band_block_offset_from_addr(breloc->band, addr);
-		ftl_reloc_clr_block(breloc, block_off);
-	}
-
-	ftl_reloc_free_move(breloc, move);
-	STAILQ_INSERT_TAIL(&breloc->move_queue, move, entry);
 }
 
 static void
 ftl_reloc_read_cb(struct ftl_io *io, void *arg, int status)
 {
 	struct ftl_reloc_move *move = arg;
-	struct ftl_band_reloc *breloc = move->breloc;
-
-	breloc->num_outstanding--;
+	struct ftl_reloc_task *task = move->task;
 
 	/* TODO: We should handle fail on relocation read. We need to inform */
 	/* user that this group of blocks is bad (update l2p with bad block address and */
@@ -299,7 +295,7 @@ ftl_reloc_read_cb(struct ftl_io *io, void *arg, int status)
 
 	move->state = FTL_RELOC_STATE_WRITE;
 	move->io = NULL;
-	STAILQ_INSERT_TAIL(&breloc->move_queue, move, entry);
+	spdk_ring_enqueue(task->move_queue, (void **)&move, 1, NULL);
 }
 
 static void
@@ -449,7 +445,7 @@ ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move,
 		},
 		.iovcnt		= 1,
 		.cb_fn		= fn,
-		.ioch		= ftl_get_io_channel(dev),
+		.ioch		= move->task->ioch,
 	};
 
 	io = ftl_io_init_internal(&opts);
@@ -479,52 +475,40 @@ ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move,
 }
 
 static int
-ftl_reloc_write(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move)
+ftl_reloc_write(struct ftl_reloc_move *move)
 {
+	struct ftl_band_reloc *breloc = move->breloc;
 	int io_flags =  FTL_IO_WEAK | FTL_IO_VECTOR_LBA | FTL_IO_BYPASS_CACHE;
 
 	if (spdk_likely(!move->io)) {
 		move->io = ftl_reloc_io_init(breloc, move, ftl_reloc_write_cb,
 					     FTL_IO_WRITE, io_flags);
 		if (!move->io) {
-			ftl_reloc_free_move(breloc, move);
-			STAILQ_INSERT_TAIL(&breloc->move_queue, move, entry);
 			return -ENOMEM;
 		}
 	}
 
-	breloc->num_outstanding++;
 	ftl_io_write(move->io);
 	return 0;
 }
 
 static int
-ftl_reloc_read(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move)
+ftl_reloc_read(struct ftl_reloc_move *move)
 {
-	struct ftl_addr addr = {};
+	struct ftl_band_reloc *breloc = move->breloc;
+	struct ftl_reloc_task *task = move->task;
 
-	move->num_blocks = ftl_reloc_next_blocks(breloc, &addr);
-	move->breloc = breloc;
-	move->addr = addr;
-
-	if (!move->num_blocks) {
-		return 0;
-	}
-
-	move->data = spdk_dma_malloc(FTL_BLOCK_SIZE * move->num_blocks, 4096, NULL);
+	move->data = spdk_mempool_get(task->buffer_pool);
 	if (!move->data) {
-		return -1;
+		return -ENOMEM;
 	}
 
 	move->io = ftl_reloc_io_init(breloc, move, ftl_reloc_read_cb, FTL_IO_READ, 0);
 	if (!move->io) {
-		ftl_reloc_free_move(breloc, move);
-		STAILQ_INSERT_TAIL(&breloc->move_queue, move, entry);
-		SPDK_ERRLOG("Failed to initialize io for relocation.");
-		return -1;
+		spdk_mempool_put(task->buffer_pool, move->data);
+		return -ENOMEM;
 	}
 
-	breloc->num_outstanding++;
 	ftl_io_read(move->io);
 	return 0;
 }
@@ -532,44 +516,41 @@ ftl_reloc_read(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move)
 static void
 ftl_reloc_process_moves(struct ftl_band_reloc *breloc)
 {
+	struct ftl_reloc *reloc = breloc->parent;
+	struct ftl_band *band = breloc->band;
 	struct ftl_reloc_move *move;
-	STAILQ_HEAD(, ftl_reloc_move) move_queue;
-	int rc = 0;
+	struct ftl_reloc_task *task;
+	struct ftl_addr addr = {};
+	size_t max_qdepth;
 
-	/*
-	 * When IO allocation fails, we do not want to retry immediately so keep moves on
-	 * temporary queue
-	 */
-	STAILQ_INIT(&move_queue);
-	STAILQ_SWAP(&breloc->move_queue, &move_queue, ftl_reloc_move);
+	max_qdepth = band->high_prio ? reloc->max_qdepth : reloc->max_qdepth / reloc->num_active;
 
-	while (!STAILQ_EMPTY(&move_queue)) {
-		move = STAILQ_FIRST(&move_queue);
-		STAILQ_REMOVE_HEAD(&move_queue, entry);
+	while (true) {
+		STAILQ_FOREACH(task, &reloc->task_queue, entry) {
+			if (breloc->num_outstanding == max_qdepth) {
+				return;
+			}
 
-		switch (move->state) {
-		case FTL_RELOC_STATE_READ:
-			rc = ftl_reloc_read(breloc, move);
-			break;
-		case FTL_RELOC_STATE_WRITE:
-			rc = ftl_reloc_write(breloc, move);
-			break;
-		default:
-			assert(false);
-			break;
-		}
+			move = STAILQ_FIRST(&reloc->free_move_queue);
+			if (!move) {
+				return;
+			}
 
-		if (rc) {
-			SPDK_ERRLOG("Move queue processing failed\n");
-			assert(false);
+			move->num_blocks = ftl_reloc_next_blocks(breloc, &addr);
+			if (!move->num_blocks) {
+				return;
+			}
+
+			STAILQ_REMOVE_HEAD(&reloc->free_move_queue, entry);
+			breloc->num_outstanding++;
+			move->state = FTL_RELOC_STATE_READ;
+			move->task = task;
+			move->breloc = breloc;
+			move->addr = addr;
+
+			spdk_ring_enqueue(task->move_queue, (void **)&move, 1, NULL);
 		}
 	}
-}
-
-static bool
-ftl_reloc_done(struct ftl_band_reloc *breloc)
-{
-	return !breloc->num_outstanding && STAILQ_EMPTY(&breloc->move_queue);
 }
 
 static void
@@ -617,7 +598,7 @@ ftl_process_reloc(struct ftl_band_reloc *breloc)
 {
 	ftl_reloc_process_moves(breloc);
 
-	if (ftl_reloc_done(breloc)) {
+	if (breloc->num_outstanding == 0 && ftl_reloc_iter_done(breloc)) {
 		ftl_reloc_release(breloc);
 	}
 }
@@ -642,46 +623,160 @@ ftl_band_reloc_init(struct ftl_reloc *reloc, struct ftl_band_reloc *breloc,
 		return -1;
 	}
 
-	STAILQ_INIT(&breloc->move_queue);
-
-	breloc->moves = calloc(reloc->max_qdepth, sizeof(*breloc->moves));
-	if (!breloc->moves) {
-		return -1;
-	}
-
 	return 0;
 }
 
 static void
 ftl_band_reloc_free(struct ftl_band_reloc *breloc)
 {
-	struct ftl_reloc_move *move;
-
 	if (!breloc) {
 		return;
 	}
 
-	assert(breloc->num_outstanding == 0);
+	spdk_bit_array_free(&breloc->reloc_map);
+	free(breloc->iter.zone_offset);
+}
 
-	/* Drain write queue if there is active band relocation during shutdown */
-	if (breloc->state == FTL_BAND_RELOC_STATE_ACTIVE ||
-	    breloc->state == FTL_BAND_RELOC_STATE_HIGH_PRIO) {
-		assert(breloc->parent->halt);
-		STAILQ_FOREACH(move, &breloc->move_queue, entry) {
-			ftl_reloc_free_move(breloc, move);
+static void
+ftl_reloc_process_move_completions(struct ftl_reloc *reloc)
+{
+	struct ftl_reloc_move *moves[FTL_RELOC_MAX_MOVES] = {0};
+	struct ftl_reloc_move *move;
+	struct ftl_band_reloc *breloc;
+	struct ftl_addr addr;
+	size_t i, j, num_outstanding;
+
+	if (spdk_ring_count(reloc->move_cmpl_queue) == 0) {
+		return;
+	}
+
+	num_outstanding = spdk_ring_dequeue(reloc->move_cmpl_queue, (void **)moves, reloc->max_qdepth);
+
+	for (i = 0; i < num_outstanding; ++i) {
+		move = moves[i];
+		breloc = move->breloc;
+		addr = move->addr;
+		for (j = 0; j < move->num_blocks; ++j) {
+			size_t block_off;
+			addr.offset = move->addr.offset + j;
+			block_off = ftl_band_block_offset_from_addr(breloc->band, addr);
+			ftl_reloc_clr_block(breloc, block_off);
+		}
+
+		breloc->num_outstanding--;
+		STAILQ_INSERT_HEAD(&reloc->free_move_queue, move, entry);
+	}
+}
+
+static int
+ftl_reloc_task_poller(void *ctx)
+{
+	struct ftl_reloc_task *task = ctx;
+	struct ftl_reloc_move *moves[FTL_RELOC_MAX_MOVES] = {0};
+	struct ftl_reloc *reloc = task->reloc;
+	struct ftl_reloc_move *move;
+	size_t i, num_outstanding;
+	int rc = 0;
+
+	num_outstanding = spdk_ring_dequeue(task->move_queue, (void **)moves, reloc->max_qdepth);
+
+	for (i = 0; i < num_outstanding; ++i) {
+		move = moves[i];
+		switch (move->state) {
+		case FTL_RELOC_STATE_READ:
+			rc = ftl_reloc_read(move);
+			break;
+
+		case FTL_RELOC_STATE_WRITE:
+			rc = ftl_reloc_write(move);
+			break;
+
+		default:
+			assert(false);
+			break;
+		}
+
+		if (rc == -ENOMEM) {
+			spdk_ring_enqueue(task->move_queue, (void **)&move, 1, NULL);
 		}
 	}
 
-	spdk_bit_array_free(&breloc->reloc_map);
-	free(breloc->iter.zone_offset);
-	free(breloc->moves);
+	return num_outstanding;
+}
+
+static void
+_ftl_reloc_init_task(void *ctx)
+{
+	struct ftl_reloc_task *task = ctx;
+	struct spdk_ftl_dev *dev = task->reloc->dev;
+
+	task->poller = SPDK_POLLER_REGISTER(ftl_reloc_task_poller, task, 0);
+	if (!task->poller) {
+		SPDK_ERRLOG("Unable to register reloc poller\n");
+	}
+
+	task->ioch = spdk_get_io_channel(dev);
+	if (!task->ioch) {
+		SPDK_ERRLOG("Unable to create io channel for reloc task: %p\n", task);
+	}
+}
+
+static struct ftl_reloc_task *
+ftl_reloc_init_task(struct ftl_reloc *reloc, struct spdk_thread *thread)
+{
+	struct ftl_reloc_task *task;
+	char pool_name[128];
+	int rc;
+
+	task = calloc(1, sizeof(*task));
+	if (!task) {
+		return NULL;
+	}
+
+	task->reloc = reloc;
+	task->thread = thread;
+
+	task->move_queue = spdk_ring_create(SPDK_RING_TYPE_MP_SC,
+					    spdk_align32pow2(reloc->max_qdepth + 1),
+					    SPDK_ENV_SOCKET_ID_ANY);
+	if (!task->move_queue) {
+		SPDK_ERRLOG("Failed to create move queue\n");
+		goto error;
+	}
+
+	rc = snprintf(pool_name, sizeof(pool_name), "ftl-buffer-%p", task);
+	if (rc < 0 || rc >= (int)sizeof(pool_name)) {
+		SPDK_ERRLOG("Failed to create reloc moves pool name\n");
+		goto error;
+	}
+
+	task->buffer_pool = spdk_mempool_create(pool_name,
+						task->reloc->max_qdepth,
+						task->reloc->xfer_size * FTL_BLOCK_SIZE,
+						SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
+						SPDK_ENV_SOCKET_ID_ANY);
+	if (!task->buffer_pool) {
+		SPDK_ERRLOG("Failed to create reloc buffer pool\n");
+		goto error;
+	}
+
+
+	spdk_thread_send_msg(task->thread, _ftl_reloc_init_task, task);
+	return task;
+error:
+	spdk_ring_free(task->move_queue);
+	free(task);
+	return NULL;
 }
 
 struct ftl_reloc *
 ftl_reloc_init(struct spdk_ftl_dev *dev)
 {
 	struct ftl_reloc *reloc;
+	struct ftl_reloc_task *task;
+	char pool_name[128];
 	size_t i;
+	int rc;
 
 	reloc = calloc(1, sizeof(*reloc));
 	if (!reloc) {
@@ -699,8 +794,38 @@ ftl_reloc_init(struct spdk_ftl_dev *dev)
 		goto error;
 	}
 
+	if (reloc->max_qdepth < reloc->max_active) {
+		SPDK_ERRLOG("max_qdepth need to be greater or equal max_acitve relocs\n");
+		goto error;
+	}
+
 	reloc->brelocs = calloc(ftl_get_num_bands(dev), sizeof(*reloc->brelocs));
 	if (!reloc->brelocs) {
+		goto error;
+	}
+
+	rc = snprintf(pool_name, sizeof(pool_name), "ftl-moves-%p", dev);
+	if (rc < 0 || rc >= (int)sizeof(pool_name)) {
+		SPDK_ERRLOG("Failed to create reloc moves pool name\n");
+		goto error;
+	}
+
+	reloc->move_buffer = calloc(reloc->max_qdepth, sizeof(*reloc->move_buffer));
+	if (!reloc->move_buffer) {
+		SPDK_ERRLOG("Failed to initialize reloc moves pool");
+		goto error;
+	}
+
+	STAILQ_INIT(&reloc->free_move_queue);
+	for (i = 0; i < reloc->max_qdepth; ++i) {
+		STAILQ_INSERT_TAIL(&reloc->free_move_queue, &reloc->move_buffer[i], entry);
+	}
+
+	reloc->move_cmpl_queue = spdk_ring_create(SPDK_RING_TYPE_MP_SC,
+				 spdk_align32pow2(reloc->max_qdepth + 1),
+				 SPDK_ENV_SOCKET_ID_ANY);
+	if (!reloc->move_cmpl_queue) {
+		SPDK_ERRLOG("Failed to create move completion queue\n");
 		goto error;
 	}
 
@@ -713,11 +838,125 @@ ftl_reloc_init(struct spdk_ftl_dev *dev)
 	TAILQ_INIT(&reloc->pending_queue);
 	TAILQ_INIT(&reloc->active_queue);
 	TAILQ_INIT(&reloc->prio_queue);
+	STAILQ_INIT(&reloc->task_queue);
+
+	if (dev->conf.core_mask) {
+		struct spdk_cpuset cpumask = {}, tmp_cpumask = {};
+		char thread_name[32];
+		struct spdk_thread *thread;
+		bool skip_first = false;
+
+		if (spdk_cpuset_parse(&cpumask, dev->conf.core_mask)) {
+			goto error;
+		}
+
+		/* If user provide more than one core create relocation threads on next cores */
+		if (spdk_cpuset_count(&cpumask) > 1) {
+			skip_first = true;
+		}
+
+		SPDK_ENV_FOREACH_CORE(i) {
+			if (spdk_cpuset_get_cpu(&cpumask, i)) {
+				if (skip_first) {
+					skip_first = false;
+					continue;
+				}
+
+				spdk_cpuset_zero(&tmp_cpumask);
+				spdk_cpuset_set_cpu(&tmp_cpumask, i, true);
+				snprintf(thread_name, sizeof(thread_name), "ftl_reloc_thread_%lu", i);
+
+				thread = spdk_thread_create(thread_name, &tmp_cpumask);
+				if (!thread) {
+					goto error;
+				}
+
+				task = ftl_reloc_init_task(reloc, thread);
+				if (!task) {
+					spdk_thread_exit(thread);
+					goto error;
+				}
+
+				STAILQ_INSERT_TAIL(&reloc->task_queue, task, entry);
+				SPDK_NOTICELOG("Creating reloc thread on core: %lu\n", i);
+			}
+		}
+	} else {
+		task = ftl_reloc_init_task(reloc, dev->core_thread);
+		if (!task) {
+			goto error;
+		}
+
+		STAILQ_INSERT_TAIL(&reloc->task_queue, task, entry);
+	}
 
 	return reloc;
 error:
 	ftl_reloc_free(reloc);
 	return NULL;
+}
+
+struct ftl_reloc_task_fini {
+	struct ftl_reloc_task *task;
+	spdk_msg_fn	      cb;
+	void		      *cb_arg;
+};
+
+static void
+ftl_reloc_free_task(void *ctx)
+{
+	struct ftl_reloc_task_fini *fini_ctx = ctx;
+	struct ftl_reloc_task *task = fini_ctx->task;
+	struct ftl_reloc *reloc = task->reloc;
+	struct spdk_ftl_dev *dev = reloc->dev;
+
+	spdk_poller_unregister(&task->poller);
+	spdk_put_io_channel(task->ioch);
+	spdk_ring_free(task->move_queue);
+	spdk_mempool_free(task->buffer_pool);
+
+	if (dev->conf.core_mask) {
+		spdk_thread_exit(task->thread);
+	}
+
+	free(task);
+
+	task = STAILQ_FIRST(&reloc->task_queue);
+	if (task) {
+		STAILQ_REMOVE_HEAD(&reloc->task_queue, entry);
+		fini_ctx->task = task;
+		spdk_thread_send_msg(task->thread, ftl_reloc_free_task, fini_ctx);
+	} else {
+		spdk_thread_send_msg(reloc->dev->core_thread, fini_ctx->cb, fini_ctx->cb_arg);
+		free(fini_ctx);
+	}
+}
+
+int
+ftl_reloc_free_tasks(struct ftl_reloc *reloc, spdk_msg_fn cb, void *cb_arg)
+{
+	struct ftl_reloc_task_fini *fini_ctx;
+	struct ftl_reloc_task *task;
+
+	task = STAILQ_FIRST(&reloc->task_queue);
+	if (!task) {
+		cb(cb_arg);
+		return 0;
+	}
+
+	fini_ctx = calloc(1, sizeof(*fini_ctx));
+	if (!fini_ctx) {
+		SPDK_ERRLOG("Failed to allocate task: %p finish context\n", task);
+		return -1;
+	}
+
+	STAILQ_REMOVE_HEAD(&reloc->task_queue, entry);
+	fini_ctx->task = task;
+	fini_ctx->cb = cb;
+	fini_ctx->cb_arg = cb_arg;
+	spdk_thread_send_msg(task->thread, ftl_reloc_free_task, fini_ctx);
+
+	return 0;
 }
 
 void
@@ -733,6 +972,8 @@ ftl_reloc_free(struct ftl_reloc *reloc)
 		ftl_band_reloc_free(&reloc->brelocs[i]);
 	}
 
+	spdk_ring_free(reloc->move_cmpl_queue);
+	free(reloc->move_buffer);
 	free(reloc->brelocs);
 	free(reloc);
 }
@@ -759,6 +1000,8 @@ void
 ftl_reloc(struct ftl_reloc *reloc)
 {
 	struct ftl_band_reloc *breloc, *tbreloc;
+
+	ftl_reloc_process_move_completions(reloc);
 
 	if (ftl_reloc_is_halted(reloc)) {
 		return;
@@ -797,6 +1040,19 @@ ftl_reloc(struct ftl_reloc *reloc)
 		assert(breloc->state == FTL_BAND_RELOC_STATE_ACTIVE);
 		ftl_process_reloc(breloc);
 	}
+}
+
+bool
+ftl_reloc_done(struct ftl_reloc *reloc)
+{
+	struct ftl_band_reloc *breloc;
+	size_t num_outstanding = 0;
+
+	TAILQ_FOREACH(breloc, &reloc->active_queue, entry) {
+		num_outstanding += breloc->num_outstanding;
+	}
+
+	return num_outstanding == 0;
 }
 
 void

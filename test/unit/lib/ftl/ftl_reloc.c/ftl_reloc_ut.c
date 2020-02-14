@@ -34,7 +34,7 @@
 #include "spdk/stdinc.h"
 
 #include "spdk_cunit.h"
-#include "common/lib/test_env.c"
+#include "common/lib/ut_multithread.c"
 
 #include "ftl/ftl_reloc.c"
 #include "../common/utils.c"
@@ -176,10 +176,9 @@ ftl_io_reinit(struct ftl_io *io, ftl_io_fn fn, void *ctx, int flags, int type)
 static void
 single_reloc_move(struct ftl_band_reloc *breloc)
 {
-	/* Process read */
-	ftl_process_reloc(breloc);
-	/* Process write */
-	ftl_process_reloc(breloc);
+	ftl_reloc_process_moves(breloc);
+	poll_threads();
+	ftl_reloc_process_move_completions(breloc->parent);
 }
 
 static void
@@ -188,7 +187,18 @@ add_to_active_queue(struct ftl_reloc *reloc, struct ftl_band_reloc *breloc)
 	TAILQ_REMOVE(&reloc->pending_queue, breloc, entry);
 	breloc->state = FTL_BAND_RELOC_STATE_ACTIVE;
 	TAILQ_INSERT_HEAD(&reloc->active_queue, breloc, entry);
+	reloc->num_active++;
 }
+
+static int
+channel_create_cb(void *io_device, void *ctx)
+{
+	return 0;
+}
+
+static void
+channel_destroy_cb(void *io_device, void *ctx)
+{}
 
 static void
 setup_reloc(struct spdk_ftl_dev **_dev, struct ftl_reloc **_reloc,
@@ -198,7 +208,25 @@ setup_reloc(struct spdk_ftl_dev **_dev, struct ftl_reloc **_reloc,
 	struct spdk_ftl_dev *dev;
 	struct ftl_reloc *reloc;
 
-	dev = test_init_ftl_dev(geo);
+	allocate_threads(16);
+	set_thread(0);
+
+	dev = calloc(1, sizeof(*dev));
+	SPDK_CU_ASSERT_FATAL(dev != NULL);
+
+	dev->xfer_size = geo->write_unit_size;
+	dev->core_thread = spdk_get_thread();
+	dev->num_bands = geo->blockcnt / (geo->zone_size * geo->optimal_open_zones);
+	dev->bands = calloc(dev->num_bands, sizeof(*dev->bands));
+	SPDK_CU_ASSERT_FATAL(dev->bands != NULL);
+
+	dev->lba_pool = spdk_mempool_create("ftl_ut", 2, 0x18000,
+					    SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
+					    SPDK_ENV_SOCKET_ID_ANY);
+	SPDK_CU_ASSERT_FATAL(dev->lba_pool != NULL);
+
+	LIST_INIT(&dev->free_bands);
+	LIST_INIT(&dev->shut_bands);
 
 	dev->conf.max_active_relocs = MAX_ACTIVE_RELOCS;
 	dev->conf.max_reloc_qdepth = MAX_RELOC_QDEPTH;
@@ -209,6 +237,8 @@ setup_reloc(struct spdk_ftl_dev **_dev, struct ftl_reloc **_reloc,
 		test_init_ftl_band(dev, i, geo->zone_size);
 	}
 
+	spdk_io_device_register(dev, channel_create_cb, channel_destroy_cb, 0, NULL);
+
 	reloc = ftl_reloc_init(dev);
 	dev->reloc = reloc;
 	CU_ASSERT_PTR_NOT_NULL_FATAL(reloc);
@@ -217,6 +247,9 @@ setup_reloc(struct spdk_ftl_dev **_dev, struct ftl_reloc **_reloc,
 	*_dev = dev;
 	*_reloc = reloc;
 }
+
+static void free_reloc_task_cb(void *ctx)
+{}
 
 static void
 cleanup_reloc(struct spdk_ftl_dev *dev, struct ftl_reloc *reloc)
@@ -227,12 +260,19 @@ cleanup_reloc(struct spdk_ftl_dev *dev, struct ftl_reloc *reloc)
 		SPDK_CU_ASSERT_FATAL(reloc->brelocs[i].state == FTL_BAND_RELOC_STATE_INACTIVE);
 	}
 
+	ftl_reloc_free_tasks(reloc, free_reloc_task_cb, NULL);
+	poll_threads();
 	ftl_reloc_free(reloc);
 
 	for (i = 0; i < ftl_get_num_bands(dev); ++i) {
 		test_free_ftl_band(&dev->bands[i]);
 	}
-	test_free_ftl_dev(dev);
+
+	free(dev->bands);
+	spdk_mempool_free(dev->lba_pool);
+	spdk_io_device_unregister(dev, NULL);
+	free_threads();
+	free(dev);
 }
 
 static void
@@ -340,7 +380,7 @@ test_reloc_full_band(void)
 	CU_ASSERT_EQUAL(breloc->num_blocks, ftl_get_num_blocks_in_band(dev));
 
 	ftl_reloc_prepare(breloc);
-	ftl_reloc_activate(breloc);
+	add_to_active_queue(reloc, breloc);
 
 	for (i = 1; i <= num_iters; ++i) {
 		single_reloc_move(breloc);
@@ -351,11 +391,8 @@ test_reloc_full_band(void)
 
 	/*  Process reminder blocks */
 	single_reloc_move(breloc);
-	/*  Drain move queue */
-	ftl_reloc_process_moves(breloc);
 
 	CU_ASSERT_EQUAL(breloc->num_blocks, 0);
-	CU_ASSERT_TRUE(ftl_reloc_done(breloc));
 	ftl_reloc_release(breloc);
 
 	cleanup_reloc(dev, reloc);
@@ -392,9 +429,8 @@ test_reloc_scatter_band(void)
 		single_reloc_move(breloc);
 	}
 
-	ftl_process_reloc(breloc);
 	CU_ASSERT_EQUAL(breloc->num_blocks, 0);
-	CU_ASSERT_TRUE(ftl_reloc_done(breloc));
+	ftl_reloc_release(breloc);
 
 	cleanup_reloc(dev, reloc);
 }
@@ -435,11 +471,8 @@ test_reloc_zone(void)
 
 	/* In case num_blocks_in_zone % num_io != 0 one extra iteration is needed  */
 	single_reloc_move(breloc);
-	/*  Drain move queue */
-	ftl_reloc_process_moves(breloc);
 
 	CU_ASSERT_EQUAL(breloc->num_blocks, 0);
-	CU_ASSERT_TRUE(ftl_reloc_done(breloc));
 	ftl_reloc_release(breloc);
 
 	cleanup_reloc(dev, reloc);
@@ -469,11 +502,8 @@ test_reloc_single_block(void)
 	CU_ASSERT_EQUAL(breloc->num_blocks, 1);
 
 	single_reloc_move(breloc);
-	/*  Drain move queue */
-	ftl_reloc_process_moves(breloc);
 
 	CU_ASSERT_EQUAL(breloc->num_blocks, 0);
-	CU_ASSERT_TRUE(ftl_reloc_done(breloc));
 	ftl_reloc_release(breloc);
 
 	cleanup_reloc(dev, reloc);

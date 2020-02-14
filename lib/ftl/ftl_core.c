@@ -637,7 +637,8 @@ ftl_next_write_band(struct spdk_ftl_dev *dev)
 	/* Find a free band that has all of its data moved onto other closed bands */
 	LIST_FOREACH(band, &dev->free_bands, list_entry) {
 		assert(band->state == FTL_BAND_STATE_FREE);
-		if (band->num_reloc_bands == 0 && band->num_reloc_blocks == 0) {
+		if (band->num_reloc_bands == 0 &&
+		    __atomic_load_n(&band->num_reloc_blocks, __ATOMIC_SEQ_CST) == 0) {
 			break;
 		}
 	}
@@ -1564,8 +1565,9 @@ ftl_write_cb(struct ftl_io *io, void *arg, int status)
 		}
 
 		if (band != NULL) {
-			assert(band->num_reloc_blocks > 0);
-			band->num_reloc_blocks--;
+			size_t num_blocks __attribute__((unused));
+			num_blocks = __atomic_fetch_sub(&band->num_reloc_blocks, 1, __ATOMIC_SEQ_CST);
+			assert(num_blocks > 0);
 		}
 
 		entry->addr = addr;
@@ -1977,7 +1979,7 @@ ftl_fill_wbuf_entry(struct ftl_wbuf_entry *entry, struct ftl_io *io)
 	if (entry->io_flags & FTL_IO_WEAK) {
 		entry->band = ftl_band_from_addr(io->dev, io->addr);
 		entry->addr = ftl_band_next_addr(entry->band, io->addr, io->pos);
-		entry->band->num_reloc_blocks++;
+		__atomic_fetch_add(&entry->band->num_reloc_blocks, 1, __ATOMIC_SEQ_CST);
 	}
 
 	entry->trace = io->trace;

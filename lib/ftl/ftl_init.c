@@ -891,6 +891,13 @@ ftl_dev_init_state(struct ftl_dev_init_ctx *init_ctx)
 		return;
 	}
 
+	dev->reloc = ftl_reloc_init(dev);
+	if (!dev->reloc) {
+		SPDK_ERRLOG("Unable to initialize reloc structures\n");
+		ftl_init_fail(init_ctx);
+		return;
+	}
+
 	if (init_ctx->opts.mode & SPDK_FTL_MODE_CREATE) {
 		if (ftl_setup_initial_state(init_ctx)) {
 			SPDK_ERRLOG("Failed to setup initial state of the device\n");
@@ -1564,12 +1571,6 @@ spdk_ftl_dev_init(const struct spdk_ftl_dev_init_opts *_opts, spdk_ftl_init_fn c
 		goto fail_sync;
 	}
 
-	dev->reloc = ftl_reloc_init(dev);
-	if (!dev->reloc) {
-		SPDK_ERRLOG("Unable to initialize reloc structures\n");
-		goto fail_sync;
-	}
-
 	if (ftl_dev_init_io_channel(dev)) {
 		SPDK_ERRLOG("Unable to initialize IO channels\n");
 		goto fail_sync;
@@ -1664,19 +1665,52 @@ ftl_halt_poller(void *ctx)
 	struct ftl_dev_init_ctx *fini_ctx = ctx;
 	struct spdk_ftl_dev *dev = fini_ctx->dev;
 
-	if (!dev->core_poller) {
-		spdk_poller_unregister(&fini_ctx->poller);
+	if (dev->core_poller) {
+		return 0;
+	}
 
-		if (ftl_dev_has_nv_cache(dev)) {
-			ftl_nv_cache_write_header(&dev->nv_cache, true,
-						  ftl_nv_cache_header_fini_cb, fini_ctx);
-		} else {
-			fini_ctx->halt_complete_status = 0;
-			spdk_thread_send_msg(dev->core_thread, ftl_put_io_channel_cb, fini_ctx);
-		}
+	spdk_poller_unregister(&fini_ctx->poller);
+
+	if (ftl_dev_has_nv_cache(dev)) {
+		ftl_nv_cache_write_header(&dev->nv_cache, true,
+					  ftl_nv_cache_header_fini_cb, fini_ctx);
+	} else {
+		fini_ctx->halt_complete_status = 0;
+		spdk_thread_send_msg(dev->core_thread, ftl_put_io_channel_cb, fini_ctx);
 	}
 
 	return SPDK_POLLER_BUSY;
+}
+
+static void
+ftl_reloc_free_tasks_cb(void *ctx)
+{
+	struct ftl_dev_init_ctx *fini_ctx = ctx;
+	struct spdk_ftl_dev *dev = fini_ctx->dev;
+
+	dev->halt = 1;
+
+	assert(!fini_ctx->poller);
+	fini_ctx->poller = SPDK_POLLER_REGISTER(ftl_halt_poller, fini_ctx, 100);
+}
+
+static int
+ftl_halt_defrag_poller(void *ctx)
+{
+	struct ftl_dev_init_ctx *fini_ctx = ctx;
+	struct spdk_ftl_dev *dev = fini_ctx->dev;
+
+	if (!ftl_reloc_done(dev->reloc)) {
+		return SPDK_POLLER_BUSY;
+	}
+
+	if (ftl_reloc_free_tasks(dev->reloc, ftl_reloc_free_tasks_cb, fini_ctx)) {
+		return SPDK_POLLER_BUSY;
+	}
+
+	spdk_poller_unregister(&fini_ctx->poller);
+
+	return SPDK_POLLER_IDLE;
 }
 
 static void
@@ -1685,12 +1719,10 @@ ftl_add_halt_poller(void *ctx)
 	struct ftl_dev_init_ctx *fini_ctx = ctx;
 	struct spdk_ftl_dev *dev = fini_ctx->dev;
 
-	dev->halt = 1;
-
 	_ftl_halt_defrag(dev);
 
 	assert(!fini_ctx->poller);
-	fini_ctx->poller = SPDK_POLLER_REGISTER(ftl_halt_poller, fini_ctx, 100);
+	fini_ctx->poller = SPDK_POLLER_REGISTER(ftl_halt_defrag_poller, fini_ctx, 100);
 }
 
 static int
