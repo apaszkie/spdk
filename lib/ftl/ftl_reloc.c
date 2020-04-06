@@ -481,13 +481,13 @@ ftl_reloc_write(struct ftl_reloc_move *move)
 	struct ftl_reloc_task *task = move->task;
 	int io_flags =  FTL_IO_WEAK | FTL_IO_VECTOR_LBA | FTL_IO_BYPASS_CACHE;
 
-	if (spdk_likely(!move->io)) {
-		move->io = ftl_reloc_io_init(breloc, move, ftl_reloc_write_cb,
-					     FTL_IO_WRITE, io_flags);
-		if (!move->io) {
-			spdk_ring_enqueue(task->move_queue, (void **)&move, 1, NULL);
-			return;
-		}
+	move->io = ftl_reloc_io_init(breloc, move, ftl_reloc_write_cb,
+				     FTL_IO_WRITE, io_flags);
+
+	/* Try again later if IO allocation fails */
+	if (!move->io) {
+		spdk_ring_enqueue(task->move_queue, (void **)&move, 1, NULL);
+		return;
 	}
 
 	ftl_io_write(move->io);
