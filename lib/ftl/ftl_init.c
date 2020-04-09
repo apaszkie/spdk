@@ -520,15 +520,39 @@ _ftl_dev_init_core_thread(void *ctx)
 }
 
 static int
-ftl_dev_init_core_thread(struct spdk_ftl_dev *dev, const struct spdk_ftl_dev_init_opts *opts)
+ftl_dev_init_core_thread(struct spdk_ftl_dev *dev)
 {
-	if (!opts->core_thread) {
+	uint32_t i;
+	struct spdk_cpuset cpumask = {}, tmp_cpumask = {};
+	char thread_name[32];
+
+	/*
+	 * If core mask is provided create core thread on first cpu that match with the mask,
+	 * otherwise use current user thread
+	 */
+	if (dev->conf.core_mask) {
+		if (spdk_cpuset_parse(&cpumask, dev->conf.core_mask)) {
+			return -1;
+		}
+
+		SPDK_ENV_FOREACH_CORE(i) {
+			if (spdk_cpuset_get_cpu(&cpumask, i)) {
+				spdk_cpuset_set_cpu(&tmp_cpumask, i, true);
+				snprintf(thread_name, sizeof(thread_name), "ftl_core_thread_%u", i);
+
+				dev->core_thread = spdk_thread_create(thread_name, &tmp_cpumask);
+				break;
+			}
+		}
+	} else {
+		dev->core_thread = spdk_get_thread();
+	}
+
+	if (dev->core_thread == NULL) {
 		return -1;
 	}
 
-	dev->core_thread = opts->core_thread;
-
-	spdk_thread_send_msg(opts->core_thread, _ftl_dev_init_core_thread, dev);
+	spdk_thread_send_msg(dev->core_thread, _ftl_dev_init_core_thread, dev);
 	return 0;
 }
 
@@ -864,7 +888,7 @@ ftl_dev_init_state(struct ftl_dev_init_ctx *init_ctx)
 
 	ftl_dev_update_bands(dev);
 
-	if (ftl_dev_init_core_thread(dev, &init_ctx->opts)) {
+	if (ftl_dev_init_core_thread(dev)) {
 		SPDK_ERRLOG("Unable to initialize device thread\n");
 		ftl_init_fail(init_ctx);
 		return;
@@ -1446,6 +1470,7 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 		free(dev->l2p);
 	}
 	free((char *)dev->conf.l2p_path);
+	free((char *)dev->conf.core_mask);
 	free(dev);
 }
 
@@ -1500,6 +1525,14 @@ spdk_ftl_dev_init(const struct spdk_ftl_dev_init_opts *_opts, spdk_ftl_init_fn c
 	if (opts.conf->l2p_path) {
 		dev->conf.l2p_path = strdup(opts.conf->l2p_path);
 		if (!dev->conf.l2p_path) {
+			rc = -ENOMEM;
+			goto fail_sync;
+		}
+	}
+
+	if (opts.conf->core_mask) {
+		dev->conf.core_mask = strdup(opts.conf->core_mask);
+		if (!dev->conf.core_mask) {
 			rc = -ENOMEM;
 			goto fail_sync;
 		}
@@ -1572,13 +1605,7 @@ ftl_halt_complete_cb(void *ctx)
 	struct ftl_dev_init_ctx *fini_ctx = ctx;
 	struct spdk_ftl_dev *dev = fini_ctx->dev;
 
-	/* Make sure core IO channel has already been released */
-	if (dev->num_io_channels > 0) {
-		spdk_thread_send_msg(spdk_get_thread(), ftl_halt_complete_cb, ctx);
-		return;
-	}
-
-	spdk_io_device_unregister(fini_ctx->dev, NULL);
+	spdk_io_device_unregister(dev, NULL);
 
 	ftl_dev_free_sync(fini_ctx->dev);
 	if (fini_ctx->cb_fn != NULL) {
@@ -1589,19 +1616,51 @@ ftl_halt_complete_cb(void *ctx)
 }
 
 static void
+ftl_core_thread_exit(void *ctx)
+{
+	struct ftl_dev_init_ctx *fini_ctx = ctx;
+	struct spdk_ftl_dev *dev = fini_ctx->dev;
+
+	spdk_thread_exit(dev->core_thread);
+	spdk_thread_send_msg(fini_ctx->thread, ftl_halt_complete_cb, ctx);
+}
+
+static void ftl_io_channel_release_cb(void *ctx);
+
+static void
+ftl_io_channel_release_cb(void *ctx)
+{
+	struct ftl_dev_init_ctx *fini_ctx = ctx;
+	struct spdk_ftl_dev *dev = fini_ctx->dev;
+
+	/* Make sure core IO channel has already been released */
+	if (dev->num_io_channels > 0) {
+		spdk_thread_send_msg(spdk_get_thread(), ftl_io_channel_release_cb, ctx);
+		return;
+	}
+
+	if (dev->conf.core_mask) {
+		spdk_thread_send_msg(dev->core_thread, ftl_core_thread_exit, ctx);
+	} else {
+		ftl_halt_complete_cb(ctx);
+	}
+}
+
+static void
 ftl_put_io_channel_cb(void *ctx)
 {
 	struct ftl_dev_init_ctx *fini_ctx = ctx;
 	struct spdk_ftl_dev *dev = fini_ctx->dev;
 
 	spdk_put_io_channel(dev->ioch);
-	spdk_thread_send_msg(spdk_get_thread(), ftl_halt_complete_cb, ctx);
+	spdk_thread_send_msg(fini_ctx->thread, ftl_io_channel_release_cb, ctx);
 }
 
 static void
 ftl_nv_cache_header_fini_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 {
 	struct ftl_dev_init_ctx *fini_ctx = cb_arg;
+	struct spdk_ftl_dev *dev = fini_ctx->dev;
 	int rc = 0;
 
 	spdk_bdev_free_io(bdev_io);
@@ -1611,7 +1670,7 @@ ftl_nv_cache_header_fini_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb
 	}
 
 	fini_ctx->halt_complete_status = rc;
-	spdk_thread_send_msg(fini_ctx->thread, ftl_put_io_channel_cb, fini_ctx);
+	spdk_thread_send_msg(dev->core_thread, ftl_put_io_channel_cb, fini_ctx);
 }
 
 static int
@@ -1628,7 +1687,7 @@ ftl_halt_poller(void *ctx)
 						  ftl_nv_cache_header_fini_cb, fini_ctx);
 		} else {
 			fini_ctx->halt_complete_status = 0;
-			spdk_thread_send_msg(fini_ctx->thread, ftl_put_io_channel_cb, fini_ctx);
+			spdk_thread_send_msg(dev->core_thread, ftl_put_io_channel_cb, fini_ctx);
 		}
 	}
 

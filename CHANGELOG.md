@@ -2,6 +2,11 @@
 
 ## v20.07: (Upcoming Release)
 
+### ftl
+
+Added `core_mask` parameter for bdev ftl that allow user to specify on which core
+ftl "write thread" and "relocation threads" should running.
+
 ### nvmf
 
 The NVMe-oF target no longer supports connecting scheduling configuration and instead

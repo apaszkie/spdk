@@ -250,6 +250,10 @@ bdev_ftl_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w
 		spdk_json_write_named_string(w, "l2p_path", conf->l2p_path);
 	}
 
+	if (conf->core_mask) {
+		spdk_json_write_named_string(w, "core_mask", conf->core_mask);
+	}
+
 	spdk_uuid_fmt_lower(uuid, sizeof(uuid), &attrs.uuid);
 	spdk_json_write_named_string(w, "uuid", uuid);
 
@@ -428,9 +432,6 @@ bdev_ftl_create_bdev(const struct ftl_bdev_init_opts *bdev_opts,
 	opts.base_bdev = bdev_opts->base_bdev;
 	opts.cache_bdev = bdev_opts->cache_bdev;
 	opts.conf = &bdev_opts->ftl_conf;
-
-	/* TODO: set threads based on config */
-	opts.core_thread = spdk_get_thread();
 
 	rc = spdk_ftl_dev_init(&opts, bdev_ftl_create_cb, ftl_bdev);
 	if (rc) {
