@@ -2454,7 +2454,7 @@ ftl_task_core(void *ctx)
 	ftl_process_writes(dev);
 	ftl_process_relocs(dev);
 
-	return SPDK_POLLER_BUSY;
+	return 0;
 }
 
 SPDK_LOG_REGISTER_COMPONENT("ftl_core", SPDK_LOG_FTL_CORE)

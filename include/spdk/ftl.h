@@ -78,6 +78,9 @@ struct spdk_ftl_conf {
 	/* Maximum active band relocates */
 	size_t					max_active_relocs;
 
+	/* Core mask - core thread plus additional relocation threads */
+	const char				*core_mask;
+
 	/* IO pool size per user thread */
 	size_t					user_io_pool_size;
 
@@ -117,10 +120,6 @@ struct spdk_ftl_dev_init_opts {
 	const char				*base_bdev;
 	/* Write buffer cache */
 	const char				*cache_bdev;
-
-	/* Thread responsible for core tasks execution */
-	struct spdk_thread			*core_thread;
-
 	/* Device's config */
 	const struct spdk_ftl_conf		*conf;
 	/* Device's name */
