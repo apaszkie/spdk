@@ -156,7 +156,6 @@ ftl_restore_free(struct ftl_restore *restore)
 		spdk_dma_free(restore->nv_cache.block[i].buf);
 	}
 
-	spdk_dma_free(restore->md_buf);
 	free(restore->bands);
 	free(restore);
 }
@@ -190,13 +189,6 @@ ftl_restore_init(struct spdk_ftl_dev *dev, ftl_restore_fn cb, void *cb_arg)
 		rband->band = &dev->bands[i];
 		rband->parent = restore;
 		rband->md_status = FTL_MD_NO_MD;
-	}
-
-	/* Allocate buffer capable of holding head mds of all bands */
-	restore->md_buf = spdk_dma_zmalloc(ftl_get_num_bands(dev) * ftl_head_md_num_blocks(dev) *
-					   FTL_BLOCK_SIZE, 0, NULL);
-	if (!restore->md_buf) {
-		goto error;
 	}
 
 	return restore;
@@ -308,6 +300,7 @@ ftl_restore_head_complete(struct ftl_restore *restore)
 out:
 	ftl_restore_complete(restore, status);
 }
+static void ftl_restore_head_md(void *ctx);
 
 static void
 ftl_restore_head_cb(struct ftl_io *io, void *ctx, int status)
@@ -318,10 +311,14 @@ ftl_restore_head_cb(struct ftl_io *io, void *ctx, int status)
 
 	rband->md_status = status;
 	num_ios = __atomic_fetch_sub(&restore->num_ios, 1, __ATOMIC_SEQ_CST);
-	assert(num_ios > 0);
+	spdk_dma_free(rband->band->lba_map.dma_buf);
 
 	if (num_ios == 1) {
-		ftl_restore_head_complete(restore);
+		if (restore->current == ftl_get_num_bands(restore->dev)) {
+			ftl_restore_head_complete(restore);
+		} else {
+			ftl_restore_head_md(restore);
+		}
 	}
 }
 
@@ -333,15 +330,18 @@ ftl_restore_head_md(void *ctx)
 	struct ftl_restore_band *rband;
 	struct ftl_lba_map *lba_map;
 	unsigned int num_failed = 0, num_ios;
-	size_t i;
+	size_t i, qdepth = 128;
 
-	restore->num_ios = ftl_get_num_bands(dev);
-
-	for (i = 0; i < ftl_get_num_bands(dev); ++i) {
-		rband = &restore->bands[i];
+	for (i = 0; i < qdepth; ++i) {
+		rband = &restore->bands[restore->current];
 		lba_map = &rband->band->lba_map;
 
-		lba_map->dma_buf = restore->md_buf + i * ftl_head_md_num_blocks(dev) * FTL_BLOCK_SIZE;
+		lba_map->dma_buf = spdk_dma_zmalloc(ftl_head_md_num_blocks(dev) *
+						    FTL_BLOCK_SIZE, 0, NULL);
+		if (!lba_map->dma_buf) {
+			SPDK_ERRLOG("Failed to allocate dma buffer for band %u\n", restore->current);
+			ftl_restore_complete(restore, -ENOMEM);
+		}
 
 		if (ftl_band_read_head_md(rband->band, ftl_restore_head_cb, rband)) {
 			if (spdk_likely(rband->band->num_zones)) {
@@ -356,6 +356,12 @@ ftl_restore_head_md(void *ctx)
 			}
 
 			num_failed++;
+		}
+
+		restore->current++;
+		restore->num_ios++;
+		if (restore->current == ftl_get_num_bands(dev)) {
+			return;
 		}
 	}
 
