@@ -155,7 +155,10 @@ ftl_dev_dump_stats(const struct spdk_ftl_dev *dev)
 	spdk_uuid_fmt_lower(uuid, sizeof(uuid), &dev->uuid);
 	ftl_debug("\n");
 	ftl_debug("device UUID:         %s\n", uuid);
+	ftl_debug("num LBAs:            %zu\n", dev->num_lbas);
 	ftl_debug("total valid LBAs:    %zu\n", total);
+	ftl_debug("free bands:          %zu\n", dev->num_free);
+	ftl_debug("disk usage:          %.4lf\n", (double)total / (double)dev->num_lbas);
 	ftl_debug("total writes:        %"PRIu64"\n", dev->stats.write_total);
 	ftl_debug("user writes:         %"PRIu64"\n", dev->stats.write_user);
 	ftl_debug("WAF:                 %.4lf\n", waf);
