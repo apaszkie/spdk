@@ -155,6 +155,7 @@ ftl_dev_dump_stats(const struct spdk_ftl_dev *dev)
 	spdk_uuid_fmt_lower(uuid, sizeof(uuid), &dev->uuid);
 	ftl_debug("\n");
 	ftl_debug("device UUID:         %s\n", uuid);
+	ftl_debug("device name:         %s\n", dev->name);
 	ftl_debug("num LBAs:            %zu\n", dev->num_lbas);
 	ftl_debug("total valid LBAs:    %zu\n", total);
 	ftl_debug("free bands:          %zu\n", dev->num_free);

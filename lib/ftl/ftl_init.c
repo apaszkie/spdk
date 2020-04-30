@@ -59,6 +59,8 @@
 #define FTL_NSID		1
 #define FTL_ZONE_INFO_COUNT	64
 
+const char *l2p_dump = "/root/nvme_disk/l2p_";
+
 /* Dummy bdev module used to to claim bdevs. */
 static struct spdk_bdev_module g_ftl_bdev_module = {
 	.name	= "ftl_lib",
@@ -819,6 +821,121 @@ ftl_restore_device_cb(struct ftl_restore *restore, int status, void *cb_arg)
 	ftl_restore_nv_cache(restore, ftl_restore_nv_cache_cb, init_ctx);
 }
 
+struct l2p_restore {
+	struct spdk_ftl_dev *dev;
+	uint64_t slba;
+	uint64_t num_lbas;
+	int cpu;
+};
+
+static void *
+ftl_restore_l2p_worker(void *ctx)
+{
+	struct l2p_restore *restore = ctx;
+	struct spdk_ftl_dev *dev = restore->dev;
+	struct ftl_addr addr;
+	struct ftl_band *band;
+	struct ftl_lba_map *lba_map;
+	uint64_t offset;
+	uint64_t lba;
+	cpu_set_t cpuset;
+
+	CPU_ZERO(&cpuset);
+	CPU_SET(restore->cpu, &cpuset);
+	sched_setaffinity(0, sizeof(cpuset), &cpuset);
+
+	for (lba = restore->slba; lba < restore->slba + restore->num_lbas; ++lba) {
+		addr = ftl_l2p_get(dev, lba);
+
+		if (ftl_addr_cached(addr)) {
+			SPDK_ERRLOG("Cached addr: %lu\n", addr.offset);
+			assert(0);
+		}
+
+		if (ftl_addr_invalid(addr)) {
+			continue;
+		}
+
+		band = ftl_band_from_addr(dev, addr);
+		lba_map = &band->lba_map;
+		assert(lba != FTL_LBA_INVALID);
+		offset = ftl_band_block_offset_from_addr(band, addr);
+
+		pthread_spin_lock(&lba_map->lock);
+		lba_map->num_vld++;
+		spdk_bit_array_set(lba_map->vld, offset);
+		pthread_spin_unlock(&lba_map->lock);
+	}
+
+	return NULL;
+}
+
+static void
+ftl_restore_l2p(struct spdk_ftl_dev *dev)
+{
+	size_t addr_size = dev->addr_len >= 32 ? 8 : 4;
+	FILE *file;
+	size_t count;
+	struct timespec begin, end;
+#define NUM_THREADS 90
+	pthread_t thread_id[NUM_THREADS];
+	char uuid[SPDK_UUID_STRING_LEN];
+	char l2p_path[256];
+	struct l2p_restore ctx[NUM_THREADS];
+
+	clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
+
+	spdk_uuid_fmt_lower(uuid, sizeof(uuid), &dev->uuid);
+	snprintf(l2p_path, sizeof(l2p_path), "%s%s", l2p_dump, uuid);
+
+	file = fopen(l2p_path, "rb");
+	if (!file) {
+		SPDK_ERRLOG("Can't read l2p\n");
+		return;
+	}
+
+	count = fread(dev->l2p, addr_size, dev->num_lbas, file);
+	if (count != dev->num_lbas) {
+		SPDK_ERRLOG("Fail to read l2p\n");
+		return;
+	}
+	fclose(file);
+
+	clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+	SPDK_NOTICELOG("ltp read took %f seconds\n",
+		       (end.tv_nsec - begin.tv_nsec) / 1000000000.0 +
+		       (end.tv_sec  - begin.tv_sec));
+
+	clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
+
+	uint64_t num_blocks_per_thread = dev->num_lbas / NUM_THREADS;
+	uint64_t remaining_blocks = dev->num_lbas % NUM_THREADS;
+	uint64_t all_blocks = 0;
+
+	for (uint32_t i = 0; i < NUM_THREADS; ++i) {
+		ctx[i].dev = dev;
+		ctx[i].slba = i * num_blocks_per_thread;
+		ctx[i].num_lbas = num_blocks_per_thread;
+		if (i == NUM_THREADS - 1) {
+			ctx[i].num_lbas += remaining_blocks;
+		}
+		all_blocks += ctx[i].num_lbas;
+		ctx[i].cpu = i;
+		pthread_create(&thread_id[i], NULL, ftl_restore_l2p_worker, &ctx[i]);
+	}
+
+	assert(all_blocks == dev->num_lbas);
+
+	for (uint32_t i = 0; i < NUM_THREADS; ++i) {
+		pthread_join(thread_id[i], NULL);
+	}
+
+	clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+	SPDK_NOTICELOG("ltp restore took %f seconds\n",
+		       (end.tv_nsec - begin.tv_nsec) / 1000000000.0 +
+		       (end.tv_sec  - begin.tv_sec));
+}
+
 static void
 ftl_restore_md_cb(struct ftl_restore *restore, int status, void *cb_arg)
 {
@@ -835,10 +952,8 @@ ftl_restore_md_cb(struct ftl_restore *restore, int status, void *cb_arg)
 		goto error;
 	}
 
-	if (ftl_restore_device(restore, ftl_restore_device_cb, init_ctx)) {
-		SPDK_ERRLOG("Failed to start device restoration from the SSD\n");
-		goto error;
-	}
+	ftl_restore_l2p(init_ctx->dev);
+	ftl_restore_device_cb(restore, 0, init_ctx);
 
 	return;
 error:
@@ -1403,6 +1518,41 @@ ftl_release_bdev(struct spdk_bdev_desc *bdev_desc)
 }
 
 static void
+ftl_dump_l2p(struct spdk_ftl_dev *dev)
+{
+	size_t addr_size = dev->addr_len >= 32 ? 8 : 4;
+	size_t count;
+	FILE *file;
+	struct timespec begin, end;
+	char uuid[SPDK_UUID_STRING_LEN];
+	char l2p_path[256];
+
+	clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
+
+	spdk_uuid_fmt_lower(uuid, sizeof(uuid), &dev->uuid);
+	snprintf(l2p_path, sizeof(l2p_path), "%s%s", l2p_dump, uuid);
+
+	file = fopen(l2p_path, "wb");
+	if (!file) {
+		SPDK_ERRLOG("Can't read file to dump l2p\n");
+		return;
+	}
+
+	count = fwrite(dev->l2p, addr_size, dev->num_lbas, file);
+	if (count != dev->num_lbas) {
+		SPDK_ERRLOG("Fail to write l2p count: %lu l2p_size: %lu\n", count,  addr_size * dev->num_lbas);
+		return;
+	}
+
+	fclose(file);
+	clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+
+	SPDK_ERRLOG("l2p dump took %f seconds\n",
+		    (end.tv_nsec - begin.tv_nsec) / 1000000000.0 +
+		    (end.tv_sec  - begin.tv_sec));
+}
+
+static void
 ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 {
 	struct spdk_ftl_dev *iter;
@@ -1462,6 +1612,7 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 		pmem_unmap(dev->l2p, dev->l2p_pmem_len);
 #endif /* SPDK_CONFIG_PMDK */
 	} else {
+		ftl_dump_l2p(dev);
 		free(dev->l2p);
 	}
 	free((char *)dev->conf.l2p_path);
