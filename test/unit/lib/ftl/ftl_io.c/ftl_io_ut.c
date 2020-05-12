@@ -746,19 +746,14 @@ test_acquire_entry(void)
 
 		entry = ftl_acquire_wbuf_entry(ftl_ioch, 0);
 		CU_ASSERT(entry == NULL);
-
-		for (; tmp_idx < num_entries; ++tmp_idx) {
-			entries[entry_idx++] = ftl_acquire_wbuf_entry(ftl_ioch, FTL_IO_INTERNAL);
-			CU_ASSERT(entries[entry_idx - 1] != NULL);
-		}
 	}
 
 	for (ioch_idx = 0; ioch_idx < num_io_channels; ++ioch_idx) {
 		set_thread(ioch_idx);
 
-		for (tmp_idx = 0; tmp_idx < num_entries; ++tmp_idx) {
-			ftl_release_wbuf_entry(entries[ioch_idx * num_entries + tmp_idx]);
-			entries[ioch_idx * num_entries + tmp_idx] = NULL;
+		for (tmp_idx = 0; tmp_idx < num_entries / 2; ++tmp_idx) {
+			ftl_release_wbuf_entry(entries[ioch_idx * (num_entries / 2) + tmp_idx]);
+			entries[ioch_idx * (num_entries / 2) + tmp_idx] = NULL;
 		}
 
 		spdk_put_io_channel(ioch_array[ioch_idx]);

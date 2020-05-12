@@ -707,6 +707,7 @@ _ftl_reloc_init_task(void *ctx)
 {
 	struct ftl_reloc_task *task = ctx;
 	struct spdk_ftl_dev *dev = task->reloc->dev;
+	struct ftl_io_channel *ioch;
 
 	task->poller = spdk_poller_register(ftl_reloc_poller, task, 0);
 	if (!task->poller) {
@@ -714,6 +715,8 @@ _ftl_reloc_init_task(void *ctx)
 	}
 
 	task->ioch = spdk_get_io_channel(dev);
+	ioch = ftl_io_channel_get_ctx(task->ioch);
+	ioch->reloc = true;
 }
 
 static struct ftl_reloc_task *

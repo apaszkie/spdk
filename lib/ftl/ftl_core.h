@@ -300,14 +300,24 @@ void	ftl_get_media_events(struct spdk_ftl_dev *dev);
 int	ftl_io_channel_poll(void *arg);
 void	ftl_evict_cache_entry(struct spdk_ftl_dev *dev, struct ftl_wbuf_entry *entry);
 struct spdk_io_channel *ftl_get_io_channel(const struct spdk_ftl_dev *dev);
-struct ftl_io_channel *ftl_io_channel_get_ctx(struct spdk_io_channel *ioch);
-
 
 #define ftl_to_addr(address) \
 	(struct ftl_addr) { .offset = (uint64_t)(address) }
 
 #define ftl_to_addr_packed(address) \
 	(struct ftl_addr) { .pack.offset = (uint32_t)(address) }
+
+struct _ftl_io_channel {
+	struct ftl_io_channel *ioch;
+};
+
+static inline struct ftl_io_channel *
+ftl_io_channel_get_ctx(struct spdk_io_channel *ioch)
+{
+	struct _ftl_io_channel *_ioch = spdk_io_channel_get_ctx(ioch);
+
+	return _ioch->ioch;
+}
 
 static inline struct spdk_thread *
 ftl_get_core_thread(const struct spdk_ftl_dev *dev)

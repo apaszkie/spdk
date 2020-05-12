@@ -152,19 +152,14 @@ ftl_acquire_wbuf_entry(struct ftl_io_channel *io_channel, int io_flags)
 	struct ftl_wbuf_entry *entry = NULL;
 	uint32_t qdepth;
 
-	if (!(io_flags & FTL_IO_INTERNAL)) {
-		qdepth = __atomic_fetch_add(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
-		if (qdepth >= io_channel->qdepth_limit) {
-			__atomic_fetch_sub(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
-			return NULL;
-		}
+	qdepth = __atomic_fetch_add(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
+	if (qdepth >= io_channel->qdepth_limit) {
+		__atomic_fetch_sub(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
+		return NULL;
 	}
 
 	if (spdk_ring_dequeue(io_channel->free_queue, (void **)&entry, 1) != 1) {
-		if (!(io_flags & FTL_IO_INTERNAL)) {
-			__atomic_fetch_sub(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
-		}
-
+		__atomic_fetch_sub(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
 		return NULL;
 	}
 
@@ -186,10 +181,7 @@ ftl_release_wbuf_entry(struct ftl_wbuf_entry *entry)
 {
 	struct ftl_io_channel *io_channel = entry->ioch;
 
-	if (!(entry->io_flags & FTL_IO_INTERNAL)) {
-		__atomic_fetch_sub(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
-	}
-
+	__atomic_fetch_sub(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
 	spdk_ring_enqueue(io_channel->free_queue, (void **)&entry, 1, NULL);
 }
 
@@ -1040,7 +1032,7 @@ ftl_apply_limits(struct spdk_ftl_dev *dev)
 	const struct spdk_ftl_limit *limit;
 	struct ftl_io_channel *ioch;
 	struct ftl_stats *stats = &dev->stats;
-	uint32_t qdepth_limit = 100;
+	uint32_t qdepth_limit = 100, qdepth_reloc;
 	int i;
 
 	/* Clear existing limit */
@@ -1059,8 +1051,21 @@ ftl_apply_limits(struct spdk_ftl_dev *dev)
 
 	ftl_trace_limits(dev, dev->limit, dev->num_free);
 	TAILQ_FOREACH(ioch, &dev->ioch_queue, tailq) {
-		__atomic_store_n(&ioch->qdepth_limit, (qdepth_limit * ioch->num_entries) / 100,
-				 __ATOMIC_SEQ_CST);
+		if (ioch->reloc) {
+			qdepth_reloc = qdepth_limit;
+			if (qdepth_reloc == 100) {
+				qdepth_reloc = ftl_get_limit(dev, SPDK_FTL_LIMIT_START)->limit;
+			}
+
+			qdepth_reloc = (100 - qdepth_reloc) * ioch->num_entries / 100;
+			if (qdepth_reloc < dev->xfer_size) {
+				qdepth_reloc = dev->xfer_size;
+			}
+			__atomic_store_n(&ioch->qdepth_limit, qdepth_reloc, __ATOMIC_SEQ_CST);
+		} else {
+			__atomic_store_n(&ioch->qdepth_limit, (qdepth_limit * ioch->num_entries) / 100,
+					 __ATOMIC_SEQ_CST);
+		}
 	}
 }
 
