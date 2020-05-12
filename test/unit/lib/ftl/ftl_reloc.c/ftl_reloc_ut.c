@@ -193,6 +193,13 @@ add_to_active_queue(struct ftl_reloc *reloc, struct ftl_band_reloc *breloc)
 static int
 channel_create_cb(void *io_device, void *ctx)
 {
+	struct _ftl_io_channel *_ioch = ctx;
+	struct ftl_io_channel *ioch;
+	ioch = calloc(1, sizeof(*ioch));
+	SPDK_CU_ASSERT_FATAL(ioch != NULL);
+
+	_ioch->ioch = ioch;
+
 	return 0;
 }
 

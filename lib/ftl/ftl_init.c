@@ -1007,18 +1007,6 @@ ftl_dev_init_zones(struct ftl_dev_init_ctx *init_ctx)
 	return 0;
 }
 
-struct _ftl_io_channel {
-	struct ftl_io_channel *ioch;
-};
-
-struct ftl_io_channel *
-ftl_io_channel_get_ctx(struct spdk_io_channel *ioch)
-{
-	struct _ftl_io_channel *_ioch = spdk_io_channel_get_ctx(ioch);
-
-	return _ioch->ioch;
-}
-
 static void
 ftl_io_channel_register(void *ctx)
 {

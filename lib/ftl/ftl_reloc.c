@@ -709,6 +709,7 @@ _ftl_reloc_init_task(void *ctx)
 {
 	struct ftl_reloc_task *task = ctx;
 	struct spdk_ftl_dev *dev = task->reloc->dev;
+	struct ftl_io_channel *ioch;
 
 	task->poller = SPDK_POLLER_REGISTER(ftl_reloc_task_poller, task, 0);
 	if (!task->poller) {
@@ -719,6 +720,9 @@ _ftl_reloc_init_task(void *ctx)
 	if (!task->ioch) {
 		SPDK_ERRLOG("Unable to create io channel for reloc task: %p\n", task);
 	}
+
+	ioch = ftl_io_channel_get_ctx(task->ioch);
+	ioch->reloc = true;
 }
 
 static struct ftl_reloc_task *
