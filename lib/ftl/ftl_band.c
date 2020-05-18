@@ -521,7 +521,7 @@ ftl_band_block_offset_from_addr(struct ftl_band *band, struct ftl_addr addr)
 {
 	assert(ftl_addr_get_band(band->dev, addr) == band->id);
 	assert(ftl_addr_get_punit(band->dev, addr) < ftl_get_num_punits(band->dev));
-	return addr.offset % ftl_get_num_blocks_in_band(band->dev);
+	return addr.offset & (ftl_get_num_blocks_in_band(band->dev) - 1);
 }
 
 struct ftl_addr

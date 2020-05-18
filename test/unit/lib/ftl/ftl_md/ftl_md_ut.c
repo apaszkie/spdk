@@ -40,10 +40,10 @@
 #include "../common/utils.c"
 
 struct base_bdev_geometry g_geo = {
-	.write_unit_size    = 16,
-	.optimal_open_zones = 12,
-	.zone_size	    = 100,
-	.blockcnt	    = 1500 * 100 * 12,
+	.write_unit_size    = 8,
+	.optimal_open_zones = 8,
+	.zone_size	    = 128,
+	.blockcnt	    = 128 * 128 * 8,
 };
 
 static void
@@ -120,7 +120,7 @@ test_md_unpack_fail(void)
 
 	/* check invalid size */
 	ftl_pack_tail_md(band);
-	g_geo.zone_size--;
+	band->dev->zone_size--;
 	CU_ASSERT_EQUAL(ftl_unpack_tail_md(band), FTL_MD_INVALID_SIZE);
 
 	cleanup_band(band);

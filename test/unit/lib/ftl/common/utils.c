@@ -73,6 +73,8 @@ test_init_ftl_dev(const struct base_bdev_geometry *geo)
 	dev = calloc(1, sizeof(*dev));
 	SPDK_CU_ASSERT_FATAL(dev != NULL);
 
+	dev->zone_size = geo->zone_size;
+	dev->optimal_open_zones = geo->optimal_open_zones;
 	dev->xfer_size = geo->write_unit_size;
 	dev->core_thread = spdk_thread_create("unit_test_thread", NULL);
 	spdk_set_thread(dev->core_thread);
@@ -168,6 +170,11 @@ test_offset_from_addr(struct ftl_addr addr, struct ftl_band *band)
 	struct spdk_ftl_dev *dev = band->dev;
 
 	CU_ASSERT_EQUAL(ftl_addr_get_band(dev, addr), band->id);
+
+	uint64_t off1 = addr.offset & (ftl_get_num_blocks_in_band(band->dev) - 1);
+	if (off1 != addr.offset - band->id * ftl_get_num_blocks_in_band(dev)) {
+		assert(0);
+	}
 
 	return addr.offset - band->id * ftl_get_num_blocks_in_band(dev);
 }

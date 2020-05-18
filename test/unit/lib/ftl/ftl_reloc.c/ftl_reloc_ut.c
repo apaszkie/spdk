@@ -43,10 +43,10 @@
 #define MAX_RELOC_QDEPTH  31
 
 struct base_bdev_geometry g_geo = {
-	.write_unit_size    = 16,
-	.optimal_open_zones = 12,
-	.zone_size	    = 100,
-	.blockcnt	    = 1500 * 100 * 12,
+	.write_unit_size    = 8,
+	.optimal_open_zones = 8,
+	.zone_size	    = 1024,
+	.blockcnt	    = 1024 * 1024 * 12,
 };
 
 DEFINE_STUB(ftl_dev_tail_md_disk_size, size_t, (const struct spdk_ftl_dev *dev), 1);
@@ -221,6 +221,8 @@ setup_reloc(struct spdk_ftl_dev **_dev, struct ftl_reloc **_reloc,
 	dev = calloc(1, sizeof(*dev));
 	SPDK_CU_ASSERT_FATAL(dev != NULL);
 
+	dev->optimal_open_zones = geo->write_unit_size;
+	dev->zone_size = geo->zone_size;
 	dev->xfer_size = geo->write_unit_size;
 	dev->core_thread = spdk_get_thread();
 	dev->num_bands = geo->blockcnt / (geo->zone_size * geo->optimal_open_zones);
@@ -307,7 +309,6 @@ test_reloc_iter_full(void)
 
 	setup_reloc(&dev, &reloc, &g_geo);
 
-	g_geo.zone_size = 100;
 	breloc = &reloc->brelocs[0];
 	band = breloc->band;
 
