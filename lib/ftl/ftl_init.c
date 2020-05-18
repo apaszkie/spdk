@@ -1469,6 +1469,8 @@ ftl_dev_init_base_bdev(struct spdk_ftl_dev *dev, const char *bdev_name)
 		return -1;
 	}
 
+	dev->zone_size = spdk_bdev_get_zone_size(bdev);
+	dev->optimal_open_zones = spdk_bdev_get_optimal_open_zones(bdev);
 	dev->xfer_size = spdk_bdev_get_write_unit_size(bdev);
 	dev->md_size = spdk_bdev_get_md_size(bdev);
 
@@ -1489,6 +1491,11 @@ ftl_dev_init_base_bdev(struct spdk_ftl_dev *dev, const char *bdev_name)
 	    !spdk_bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_ZONE_APPEND)) {
 		SPDK_ERRLOG("Bdev dosen't support append: %s\n",
 			    spdk_bdev_get_name(bdev));
+		return -1;
+	}
+
+	if (ftl_get_num_blocks_in_zone(dev) != spdk_align64pow2(ftl_get_num_blocks_in_zone(dev))) {
+		SPDK_ERRLOG("Unsupported geometry. Base bdev num blocks in zone must be power of 2\n");
 		return -1;
 	}
 

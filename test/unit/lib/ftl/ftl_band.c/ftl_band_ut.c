@@ -44,10 +44,10 @@
 #define TEST_LBA		0x68676564
 
 struct base_bdev_geometry g_geo = {
-	.write_unit_size    = 16,
-	.optimal_open_zones = 9,
-	.zone_size	    = 100,
-	.blockcnt	    = 1500 * 100 * 8,
+	.write_unit_size    = 8,
+	.optimal_open_zones = 8,
+	.zone_size	    = 1024,
+	.blockcnt	    = 1024 * 1024 * 8,
 };
 
 static struct spdk_ftl_dev *g_dev;

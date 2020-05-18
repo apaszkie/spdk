@@ -45,7 +45,7 @@ struct base_bdev_geometry g_geo = {
 	.write_unit_size    = 16,
 	.optimal_open_zones = 12,
 	.zone_size	    = 128,
-	.blockcnt	    = 20 * 128 * 12,
+	.blockcnt	    = 1024,
 };
 
 #if defined(DEBUG)

@@ -140,6 +140,8 @@ struct spdk_ftl_dev {
 
 	/* Underlying device */
 	struct spdk_bdev_desc			*base_bdev_desc;
+	uint64_t				zone_size;
+	uint32_t				optimal_open_zones;
 
 	/* Non-volatile write buffer cache */
 	struct ftl_nv_cache			nv_cache;
@@ -334,7 +336,7 @@ ftl_get_num_bands(const struct spdk_ftl_dev *dev)
 static inline size_t
 ftl_get_num_punits(const struct spdk_ftl_dev *dev)
 {
-	return spdk_bdev_get_optimal_open_zones(spdk_bdev_desc_get_bdev(dev->base_bdev_desc));
+	return dev->optimal_open_zones;
 }
 
 static inline size_t
@@ -346,7 +348,7 @@ ftl_get_num_zones(const struct spdk_ftl_dev *dev)
 static inline size_t
 ftl_get_num_blocks_in_zone(const struct spdk_ftl_dev *dev)
 {
-	return spdk_bdev_get_zone_size(spdk_bdev_desc_get_bdev(dev->base_bdev_desc));
+	return dev->zone_size;
 }
 
 static inline uint64_t
@@ -358,25 +360,29 @@ ftl_get_num_blocks_in_band(const struct spdk_ftl_dev *dev)
 static inline uint64_t
 ftl_addr_get_zone_slba(const struct spdk_ftl_dev *dev, struct ftl_addr addr)
 {
-	return addr.offset -= (addr.offset % ftl_get_num_blocks_in_zone(dev));
+	return addr.offset & ~(ftl_get_num_blocks_in_zone(dev) - 1);
 }
 
 static inline uint64_t
 ftl_addr_get_band(const struct spdk_ftl_dev *dev, struct ftl_addr addr)
 {
-	return addr.offset / ftl_get_num_blocks_in_band(dev);
+	return addr.offset >> spdk_u64log2(ftl_get_num_blocks_in_band(dev));
 }
 
 static inline uint64_t
 ftl_addr_get_punit(const struct spdk_ftl_dev *dev, struct ftl_addr addr)
 {
-	return (addr.offset / ftl_get_num_blocks_in_zone(dev)) % ftl_get_num_punits(dev);
+	if (ftl_get_num_punits(dev)) {
+		return (addr.offset / ftl_get_num_blocks_in_zone(dev)) % ftl_get_num_punits(dev);
+	}
+
+	return 0;
 }
 
 static inline uint64_t
 ftl_addr_get_zone_offset(const struct spdk_ftl_dev *dev, struct ftl_addr addr)
 {
-	return addr.offset % ftl_get_num_blocks_in_zone(dev);
+	return addr.offset & (ftl_get_num_blocks_in_zone(dev) - 1);
 }
 
 static inline size_t
