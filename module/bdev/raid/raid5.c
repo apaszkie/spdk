@@ -54,6 +54,8 @@ struct stripe_request {
 	/* The target stripe */
 	struct stripe *stripe;
 
+	uint64_t stripe_index;
+
 	/* Counter for remaining chunk requests */
 	int remaining;
 
@@ -475,6 +477,17 @@ raid5_complete_stripe_request(struct stripe_request *stripe_req)
 	}
 }
 
+static void
+raid5_complete_stripe_read_request(struct stripe_request *stripe_req)
+{
+	struct raid_bdev_io *raid_io = stripe_req->raid_io;
+	enum spdk_bdev_io_status status = stripe_req->status;
+
+	raid5_stripe_request_put(stripe_req);
+
+	raid_bdev_io_complete(raid_io, status);
+}
+
 static inline enum spdk_bdev_io_status errno_to_status(int err)
 {
 	err = abs(err);
@@ -549,7 +562,7 @@ _raid5_submit_chunk_request(void *_chunk)
 		}
 	}
 
-	base_offset_blocks = (stripe_req->stripe->index << raid_bdev->strip_size_shift) + offset_blocks;
+	base_offset_blocks = (stripe_req->stripe_index << raid_bdev->strip_size_shift) + offset_blocks;
 
 	if (io_type == SPDK_BDEV_IO_TYPE_READ) {
 		ret = spdk_bdev_readv_blocks(base_info->desc, base_ch,
@@ -766,7 +779,11 @@ raid5_stripe_read(struct stripe_request *stripe_req)
 	struct chunk *chunk;
 	int ret;
 
-	stripe_req->chunk_requests_complete_cb = raid5_complete_stripe_request;
+	if (stripe_req->stripe) {
+		stripe_req->chunk_requests_complete_cb = raid5_complete_stripe_request;
+	} else {
+		stripe_req->chunk_requests_complete_cb = raid5_complete_stripe_read_request;
+	}
 
 	FOR_EACH_DATA_CHUNK(stripe_req, chunk) {
 		if (chunk->req_blocks > 0) {
@@ -796,7 +813,7 @@ raid5_submit_stripe_request(struct stripe_request *stripe_req)
 }
 
 static void
-raid5_handle_stripe(struct raid_bdev_io *raid_io, struct stripe *stripe,
+raid5_handle_stripe(struct raid_bdev_io *raid_io, struct stripe *stripe, uint64_t stripe_index,
 		    uint64_t stripe_offset, uint64_t blocks, uint64_t iov_offset)
 {
 	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(raid_io);
@@ -818,7 +835,7 @@ raid5_handle_stripe(struct raid_bdev_io *raid_io, struct stripe *stripe,
 		uint64_t blocks_limit = raid_bdev->strip_size -
 					(stripe_offset % raid_bdev->strip_size);
 		if (blocks > blocks_limit) {
-			raid5_handle_stripe(raid_io, stripe, stripe_offset,
+			raid5_handle_stripe(raid_io, stripe, stripe_index, stripe_offset,
 					    blocks_limit, iov_offset);
 			blocks -= blocks_limit;
 			stripe_offset += blocks_limit;
@@ -838,8 +855,9 @@ raid5_handle_stripe(struct raid_bdev_io *raid_io, struct stripe *stripe,
 	stripe_req->remaining = 0;
 
 	stripe_req->stripe = stripe;
+	stripe_req->stripe_index = stripe_index;
 	stripe_req->parity_chunk = &stripe_req->chunks[raid5_stripe_data_chunks_num(
-					   raid_bdev) - stripe->index % raid_bdev->num_base_bdevs];
+					   raid_bdev) - stripe_index % raid_bdev->num_base_bdevs];
 
 	stripe_offset_from = stripe_offset;
 	stripe_offset_to = stripe_offset_from + blocks;
@@ -879,10 +897,14 @@ raid5_handle_stripe(struct raid_bdev_io *raid_io, struct stripe *stripe,
 		}
 	}
 
-	pthread_spin_lock(&stripe->requests_lock);
-	do_submit = TAILQ_EMPTY(&stripe->requests);
-	TAILQ_INSERT_TAIL(&stripe->requests, stripe_req, link);
-	pthread_spin_unlock(&stripe->requests_lock);
+	if (stripe == NULL) {
+		do_submit = true;
+	} else {
+		pthread_spin_lock(&stripe->requests_lock);
+		do_submit = TAILQ_EMPTY(&stripe->requests);
+		TAILQ_INSERT_TAIL(&stripe->requests, stripe_req, link);
+		pthread_spin_unlock(&stripe->requests_lock);
+	}
 
 	if (do_submit) {
 		raid5_submit_stripe_request(stripe_req);
@@ -987,6 +1009,11 @@ raid5_submit_rw_request(struct raid_bdev_io *raid_io)
 	uint64_t stripe_offset = offset_blocks % r5info->stripe_blocks;
 	struct stripe *stripe;
 
+	if (bdev_io->type == SPDK_BDEV_IO_TYPE_READ) {
+		raid5_handle_stripe(raid_io, NULL, stripe_index, stripe_offset, num_blocks, 0);
+		return;
+	}
+
 	stripe = raid5_get_stripe(r5info, stripe_index);
 	if (spdk_unlikely(stripe == NULL)) {
 		struct raid5_io_channel *r5ch = raid_bdev_io_channel_get_resource(raid_io->raid_ch);
@@ -1000,7 +1027,7 @@ raid5_submit_rw_request(struct raid_bdev_io *raid_io)
 
 	raid_io->base_bdev_io_remaining = num_blocks;
 
-	raid5_handle_stripe(raid_io, stripe, stripe_offset, num_blocks, 0);
+	raid5_handle_stripe(raid_io, stripe, stripe_index, stripe_offset, num_blocks, 0);
 }
 
 static int
