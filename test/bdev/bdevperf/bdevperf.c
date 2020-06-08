@@ -203,6 +203,143 @@ performance_dump_job(struct bdevperf_aggregate_stats *stats, struct bdevperf_job
 	stats->total_timeout_per_second += timeout_per_second;
 }
 
+/*
+  This is a maximally equidistributed combined Tausworthe generator
+  based on code from GNU Scientific Library 1.5 (30 Jun 2004)
+
+   x_n = (s1_n ^ s2_n ^ s3_n)
+
+   s1_{n+1} = (((s1_n & 4294967294) <<12) ^ (((s1_n <<13) ^ s1_n) >>19))
+   s2_{n+1} = (((s2_n & 4294967288) << 4) ^ (((s2_n << 2) ^ s2_n) >>25))
+   s3_{n+1} = (((s3_n & 4294967280) <<17) ^ (((s3_n << 3) ^ s3_n) >>11))
+
+   The period of this generator is about 2^88.
+
+   From: P. L'Ecuyer, "Maximally Equidistributed Combined Tausworthe
+   Generators", Mathematics of Computation, 65, 213 (1996), 203--213.
+
+   This is available on the net from L'Ecuyer's home page,
+
+   http://www.iro.umontreal.ca/~lecuyer/myftp/papers/tausme.ps
+   ftp://ftp.iro.umontreal.ca/pub/simulation/lecuyer/papers/tausme.ps
+
+   There is an erratum in the paper "Tables of Maximally
+   Equidistributed Combined LFSR Generators", Mathematics of
+   Computation, 68, 225 (1999), 261--269:
+   http://www.iro.umontreal.ca/~lecuyer/myftp/papers/tausme2.ps
+
+        ... the k_j most significant bits of z_j must be non-
+        zero, for each j. (Note: this restriction also applies to the
+        computer code given in [4], but was mistakenly not mentioned in
+        that paper.)
+
+   This affects the seeding procedure by imposing the requirement
+   s1 > 1, s2 > 7, s3 > 15.
+
+*/
+
+struct taus88_state {
+	unsigned int s1, s2, s3;
+};
+
+struct taus258_state {
+	uint64_t s1, s2, s3, s4, s5;
+};
+
+struct frand_state {
+	unsigned int use64;
+	union {
+		struct taus88_state state32;
+		struct taus258_state state64;
+	};
+};
+
+static inline unsigned int __rand32(struct taus88_state *state)
+{
+#define TAUSWORTHE(s,a,b,c,d) ((s&c)<<d) ^ (((s <<a) ^ s)>>b)
+
+	state->s1 = TAUSWORTHE(state->s1, 13, 19, 4294967294UL, 12);
+	state->s2 = TAUSWORTHE(state->s2, 2, 25, 4294967288UL, 4);
+	state->s3 = TAUSWORTHE(state->s3, 3, 11, 4294967280UL, 17);
+
+	return (state->s1 ^ state->s2 ^ state->s3);
+}
+
+static inline uint64_t __rand64(struct taus258_state *state)
+{
+	uint64_t xval;
+
+	xval = ((state->s1 <<  1) ^ state->s1) >> 53;
+	state->s1 = ((state->s1 & 18446744073709551614ULL) << 10) ^ xval;
+
+	xval = ((state->s2 << 24) ^ state->s2) >> 50;
+	state->s2 = ((state->s2 & 18446744073709551104ULL) <<  5) ^ xval;
+
+	xval = ((state->s3 <<  3) ^ state->s3) >> 23;
+	state->s3 = ((state->s3 & 18446744073709547520ULL) << 29) ^ xval;
+
+	xval = ((state->s4 <<  5) ^ state->s4) >> 24;
+	state->s4 = ((state->s4 & 18446744073709420544ULL) << 23) ^ xval;
+
+	xval = ((state->s5 <<  3) ^ state->s5) >> 33;
+	state->s5 = ((state->s5 & 18446744073701163008ULL) <<  8) ^ xval;
+
+	return (state->s1 ^ state->s2 ^ state->s3 ^ state->s4 ^ state->s5);
+}
+
+static inline uint64_t __rand(struct frand_state *state)
+{
+	if (state->use64)
+		return __rand64(&state->state64);
+	else
+		return __rand32(&state->state32);
+}
+
+static inline uint64_t __seed(uint64_t x, uint64_t m)
+{
+	return (x < m) ? x + m : x;
+}
+
+static void __init_rand32(struct taus88_state *state, unsigned int seed)
+{
+	int cranks = 6;
+
+#define LCG(x, seed)  ((x) * 69069 ^ (seed))
+
+	state->s1 = __seed(LCG((2^31) + (2^17) + (2^7), seed), 1);
+	state->s2 = __seed(LCG(state->s1, seed), 7);
+	state->s3 = __seed(LCG(state->s2, seed), 15);
+
+	while (cranks--)
+		__rand32(state);
+}
+
+static void __init_rand64(struct taus258_state *state, uint64_t seed)
+{
+	int cranks = 6;
+
+#define LCG64(x, seed)  ((x) * 6906969069ULL ^ (seed))
+
+	state->s1 = __seed(LCG64((2^31) + (2^17) + (2^7), seed), 1);
+	state->s2 = __seed(LCG64(state->s1, seed), 7);
+	state->s3 = __seed(LCG64(state->s2, seed), 15);
+	state->s4 = __seed(LCG64(state->s3, seed), 33);
+	state->s5 = __seed(LCG64(state->s4, seed), 49);
+
+	while (cranks--)
+		__rand64(state);
+}
+
+static void init_rand(struct frand_state *state, bool use64)
+{
+	state->use64 = use64;
+
+	if (!use64)
+		__init_rand32(&state->state32, time(NULL));
+	else
+		__init_rand64(&state->state64, time(NULL));
+}
+
 static void
 generate_data(void *buf, int buf_len, int block_size, void *md_buf, int md_size,
 	      int num_blocks, int seed)
@@ -759,6 +896,7 @@ bdevperf_job_get_task(struct bdevperf_job *job)
 }
 
 static __thread unsigned int seed = 0;
+static __thread struct frand_state state = { 0 };
 
 static void
 bdevperf_submit_single(struct bdevperf_job *job, struct bdevperf_task *task)
@@ -766,7 +904,7 @@ bdevperf_submit_single(struct bdevperf_job *job, struct bdevperf_task *task)
 	uint64_t offset_in_ios;
 
 	if (g_is_random) {
-		offset_in_ios = rand_r(&seed) % job->size_in_ios;
+		offset_in_ios = __rand(&state) % job->size_in_ios;
 	} else {
 		offset_in_ios = job->offset_in_ios++;
 		if (job->offset_in_ios == job->size_in_ios) {
@@ -1055,6 +1193,8 @@ _bdevperf_construct_job(void *ctx)
 		g_run_rc = -EINVAL;
 		goto end;
 	}
+
+	init_rand(&state, true);
 
 	job->ch = spdk_bdev_get_io_channel(job->bdev_desc);
 	if (!job->ch) {
