@@ -197,6 +197,22 @@ zone_block_destruct(void *ctx)
 	return 0;
 }
 
+static uint64_t
+zone_block_lba_to_physical(struct bdev_zone_block *bdev_node, uint64_t lba)
+{
+	size_t index = lba >> bdev_node->zone_shift;
+
+	return lba - index * (bdev_node->bdev.zone_size - bdev_node->zone_capacity);
+}
+
+static uint64_t
+zone_block_physical_to_lba(struct bdev_zone_block *bdev_node, uint64_t lba)
+{
+	size_t index = lba / bdev_node->zone_capacity;
+
+	return lba + index * (bdev_node->bdev.zone_size - bdev_node->zone_capacity);
+}
+
 static struct block_zone *
 zone_block_get_zone_containing_lba(struct bdev_zone_block *bdev_node, uint64_t lba)
 {
@@ -362,10 +378,13 @@ static void
 _zone_block_complete_write(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 {
 	struct spdk_bdev_io *orig_io = cb_arg;
+	struct bdev_zone_block *bdev_node = SPDK_CONTAINEROF(orig_io->bdev, struct bdev_zone_block, bdev);
+
 	int status = success ? SPDK_BDEV_IO_STATUS_SUCCESS : SPDK_BDEV_IO_STATUS_FAILED;
 
 	if (success && orig_io->type == SPDK_BDEV_IO_TYPE_ZONE_APPEND) {
-		orig_io->u.bdev.offset_blocks = bdev_io->u.bdev.offset_blocks;
+		orig_io->u.bdev.offset_blocks = zone_block_physical_to_lba(bdev_node,
+						bdev_io->u.bdev.offset_blocks);
 	}
 
 	/* Complete the original IO and then free the one that we created here
@@ -435,6 +454,7 @@ zone_block_write(struct bdev_zone_block *bdev_node, struct zone_block_io_channel
 	}
 	pthread_spin_unlock(&zone->lock);
 
+	lba = zone_block_lba_to_physical(bdev_node, lba);
 	if (bdev_io->u.bdev.md_buf == NULL) {
 		rc = spdk_bdev_writev_blocks(bdev_node->base_desc, ch->base_ch, bdev_io->u.bdev.iovs,
 					     bdev_io->u.bdev.iovcnt, lba,
@@ -488,6 +508,7 @@ zone_block_read(struct bdev_zone_block *bdev_node, struct zone_block_io_channel 
 		return -EINVAL;
 	}
 
+	lba = zone_block_lba_to_physical(bdev_node, lba);
 	if (bdev_io->u.bdev.md_buf == NULL) {
 		rc = spdk_bdev_readv_blocks(bdev_node->base_desc, ch->base_ch, bdev_io->u.bdev.iovs,
 					    bdev_io->u.bdev.iovcnt, lba,
