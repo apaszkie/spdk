@@ -40,7 +40,7 @@
 #include "spdk/bdev_module.h"
 
 int vbdev_zone_block_create(const char *bdev_name, const char *vbdev_name,
-			    uint64_t zone_capacity, uint64_t optimal_open_zones);
+			    uint64_t zone_capacity, uint64_t optimal_open_zones, uint64_t write_unit_size);
 
 void vbdev_zone_block_delete(const char *name, spdk_bdev_unregister_cb cb_fn, void *cb_arg);
 

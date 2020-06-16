@@ -514,7 +514,8 @@ if __name__ == "__main__":
                                                    name=args.name,
                                                    base_bdev=args.base_bdev,
                                                    zone_capacity=args.zone_capacity,
-                                                   optimal_open_zones=args.optimal_open_zones))
+                                                   optimal_open_zones=args.optimal_open_zones,
+                                                   write_unit_size=args.write_unit_size))
 
     p = subparsers.add_parser('bdev_zone_block_create',
                               help='Create virtual zone namespace device with block device backend')
@@ -522,6 +523,7 @@ if __name__ == "__main__":
     p.add_argument('-n', '--base-bdev', help='Name of underlying, non-zoned bdev', required=True)
     p.add_argument('-z', '--zone-capacity', help='Surfaced zone capacity in blocks', type=int, required=True)
     p.add_argument('-o', '--optimal-open-zones', help='Number of zones required to reach optimal write speed', type=int, required=True)
+    p.add_argument('-w', '--write-unit-size', help='Write units size', type=int, required=False)
     p.set_defaults(func=bdev_zone_block_create)
 
     def bdev_zone_block_delete(args):

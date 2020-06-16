@@ -46,6 +46,7 @@ struct rpc_construct_zone_block {
 	char *base_bdev;
 	uint64_t zone_capacity;
 	uint64_t optimal_open_zones;
+	uint64_t write_unit_size;
 };
 
 static void
@@ -60,6 +61,7 @@ static const struct spdk_json_object_decoder rpc_construct_zone_block_decoders[]
 	{"base_bdev", offsetof(struct rpc_construct_zone_block, base_bdev), spdk_json_decode_string},
 	{"zone_capacity", offsetof(struct rpc_construct_zone_block, zone_capacity), spdk_json_decode_uint64},
 	{"optimal_open_zones", offsetof(struct rpc_construct_zone_block, optimal_open_zones), spdk_json_decode_uint64},
+	{"write_unit_size", offsetof(struct rpc_construct_zone_block, write_unit_size), spdk_json_decode_uint64, true}
 };
 
 static void
@@ -80,7 +82,7 @@ rpc_zone_block_create(struct spdk_jsonrpc_request *request,
 	}
 
 	rc = vbdev_zone_block_create(req.base_bdev, req.name, req.zone_capacity,
-				     req.optimal_open_zones);
+				     req.optimal_open_zones, req.write_unit_size);
 	if (rc) {
 		SPDK_ERRLOG("Failed to create block zoned vbdev: %s", spdk_strerror(-rc));
 		spdk_jsonrpc_send_error_response_fmt(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
