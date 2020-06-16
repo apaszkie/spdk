@@ -524,7 +524,7 @@ def bdev_nvme_cuse_unregister(client, name):
     return client.call('bdev_nvme_cuse_unregister', params)
 
 
-def bdev_zone_block_create(client, name, base_bdev, zone_capacity, optimal_open_zones):
+def bdev_zone_block_create(client, name, base_bdev, zone_capacity, optimal_open_zones, write_unit_size):
     """Creates a virtual zone device on top of existing non-zoned bdev.
 
     Args:
@@ -540,6 +540,8 @@ def bdev_zone_block_create(client, name, base_bdev, zone_capacity, optimal_open_
               'base_bdev': base_bdev,
               'zone_capacity': zone_capacity,
               'optimal_open_zones': optimal_open_zones}
+    if write_unit_size:
+        params['write_unit_size'] = write_unit_size
 
     return client.call('bdev_zone_block_create', params)
 

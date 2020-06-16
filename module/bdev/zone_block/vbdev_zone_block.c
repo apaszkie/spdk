@@ -67,6 +67,7 @@ struct bdev_zone_block_config {
 	char					*bdev_name;
 	uint64_t				zone_capacity;
 	uint64_t				optimal_open_zones;
+	uint64_t				write_unit_size;
 	TAILQ_ENTRY(bdev_zone_block_config)	link;
 };
 static TAILQ_HEAD(, bdev_zone_block_config) g_bdev_configs = TAILQ_HEAD_INITIALIZER(g_bdev_configs);
@@ -144,6 +145,7 @@ zone_block_config_json(struct spdk_json_write_ctx *w)
 		spdk_json_write_named_string(w, "name", spdk_bdev_get_name(&bdev_node->bdev));
 		spdk_json_write_named_uint64(w, "zone_capacity", bdev_node->zone_capacity);
 		spdk_json_write_named_uint64(w, "optimal_open_zones", bdev_node->bdev.optimal_open_zones);
+		spdk_json_write_named_uint64(w, "write_unit_size", bdev_node->bdev.write_unit_size);
 		spdk_json_write_object_end(w);
 		spdk_json_write_object_end(w);
 	}
@@ -597,6 +599,7 @@ zone_block_dump_info_json(void *ctx, struct spdk_json_write_ctx *w)
 	spdk_json_write_named_string(w, "base_bdev", spdk_bdev_get_name(base_bdev));
 	spdk_json_write_named_uint64(w, "zone_capacity", bdev_node->zone_capacity);
 	spdk_json_write_named_uint64(w, "optimal_open_zones", bdev_node->bdev.optimal_open_zones);
+	spdk_json_write_named_uint64(w, "write_unit_size", bdev_node->bdev.write_unit_size);
 	spdk_json_write_object_end(w);
 
 	return 0;
@@ -648,7 +651,7 @@ _zone_block_ch_destroy_cb(void *io_device, void *ctx_buf)
 
 static int
 zone_block_insert_name(const char *bdev_name, const char *vbdev_name, uint64_t zone_capacity,
-		       uint64_t optimal_open_zones)
+		       uint64_t optimal_open_zones, uint64_t write_unit_size)
 {
 	struct bdev_zone_block_config *name;
 
@@ -686,6 +689,7 @@ zone_block_insert_name(const char *bdev_name, const char *vbdev_name, uint64_t z
 
 	name->zone_capacity = zone_capacity;
 	name->optimal_open_zones = optimal_open_zones;
+	name->write_unit_size = write_unit_size;
 
 	TAILQ_INSERT_TAIL(&g_bdev_configs, name, link);
 
@@ -794,7 +798,6 @@ zone_block_register(struct spdk_bdev *base_bdev)
 		}
 
 		bdev_node->bdev.write_unit_size = base_bdev->write_unit_size;
-
 		bdev_node->bdev.md_interleave = base_bdev->md_interleave;
 		bdev_node->bdev.md_len = base_bdev->md_len;
 		bdev_node->bdev.dif_type = base_bdev->dif_type;
@@ -809,6 +812,7 @@ zone_block_register(struct spdk_bdev *base_bdev)
 		/* bdev specific info */
 		bdev_node->bdev.zone_size = zone_size;
 
+		bdev_node->bdev.write_unit_size = name->write_unit_size;
 		bdev_node->zone_capacity = name->zone_capacity;
 		bdev_node->bdev.optimal_open_zones = name->optimal_open_zones;
 		bdev_node->bdev.max_open_zones = 0;
@@ -870,7 +874,7 @@ free_config:
 
 int
 vbdev_zone_block_create(const char *bdev_name, const char *vbdev_name, uint64_t zone_capacity,
-			uint64_t optimal_open_zones)
+			uint64_t optimal_open_zones, uint64_t write_unit_size)
 {
 	struct spdk_bdev *bdev = NULL;
 	int rc = 0;
@@ -885,10 +889,16 @@ vbdev_zone_block_create(const char *bdev_name, const char *vbdev_name, uint64_t 
 		return -EINVAL;
 	}
 
+	if (write_unit_size == 0) {
+		SPDK_ERRLOG("Write unit size can't be 0\n");
+		return -EINVAL;
+	}
+
 	/* Insert the bdev into our global name list even if it doesn't exist yet,
 	 * it may show up soon...
 	 */
-	rc = zone_block_insert_name(bdev_name, vbdev_name, zone_capacity, optimal_open_zones);
+	rc = zone_block_insert_name(bdev_name, vbdev_name, zone_capacity, optimal_open_zones,
+				    write_unit_size);
 	if (rc) {
 		return rc;
 	}
