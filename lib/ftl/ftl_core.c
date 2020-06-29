@@ -940,6 +940,7 @@ ftl_pad_wbuf(struct spdk_ftl_dev *dev, size_t size)
 	int flags = FTL_IO_PAD | FTL_IO_INTERNAL;
 
 	ioch = ftl_io_channel_get_ctx(ftl_get_io_channel(dev));
+	ioch->qdepth_limit = ioch->num_entries;
 
 	for (size_t i = 0; i < size; ++i) {
 		entry = ftl_acquire_wbuf_entry(ioch, flags);
