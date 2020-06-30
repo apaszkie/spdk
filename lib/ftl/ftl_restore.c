@@ -713,6 +713,7 @@ ftl_nv_cache_alloc_io(struct ftl_nv_cache_block *block, uint64_t lba)
 			}
 		},
 		.iovcnt		= 1,
+		.ioch		= ftl_get_io_channel(restore->dev),
 	};
 	struct ftl_io *io;
 
@@ -1149,6 +1150,7 @@ ftl_restore_init_pad_io(struct ftl_restore_band *rband, void *buffer,
 		},
 		.iovcnt		= 1,
 		.parent		= NULL,
+		.ioch		= ftl_get_io_channel(dev),
 	};
 	struct ftl_io *io;
 

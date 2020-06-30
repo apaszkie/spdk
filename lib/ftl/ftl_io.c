@@ -231,7 +231,7 @@ ftl_io_init_internal(const struct ftl_io_init_opts *opts)
 		if (parent) {
 			io = ftl_io_alloc_child(parent);
 		} else {
-			io = ftl_io_alloc(ftl_get_io_channel(dev));
+			io = ftl_io_alloc(opts->ioch);
 		}
 
 		if (!io) {
@@ -296,6 +296,7 @@ ftl_io_wbuf_init(struct spdk_ftl_dev *dev, struct ftl_addr addr, struct ftl_band
 		.cb_fn		= cb,
 		.iovcnt		= dev->xfer_size,
 		.md		= batch->metadata,
+		.ioch		= ftl_get_io_channel(dev),
 	};
 
 	memcpy(opts.iovs, batch->iov, sizeof(struct iovec) * dev->xfer_size);
@@ -325,6 +326,7 @@ ftl_io_erase_init(struct ftl_band *band, size_t num_blocks, ftl_io_fn cb)
 		.cb_fn		= cb,
 		.iovcnt		= 0,
 		.md		= NULL,
+		.ioch		= ftl_get_io_channel(band->dev),
 	};
 
 	io = ftl_io_init_internal(&opts);

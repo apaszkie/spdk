@@ -711,6 +711,7 @@ ftl_io_init_md_read(struct spdk_ftl_dev *dev, struct ftl_addr addr,
 			}
 		},
 		.iovcnt		= 1,
+		.ioch		= ftl_get_io_channel(dev),
 	};
 
 	io = (struct ftl_md_io *)ftl_io_init_internal(&opts);
@@ -747,6 +748,7 @@ ftl_io_init_md_write(struct spdk_ftl_dev *dev, struct ftl_band *band,
 		},
 		.iovcnt		= 1,
 		.md		= NULL,
+		.ioch		= ftl_get_io_channel(dev),
 	};
 
 	return ftl_io_init_internal(&opts);

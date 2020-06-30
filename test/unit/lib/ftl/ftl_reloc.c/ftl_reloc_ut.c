@@ -51,6 +51,7 @@ struct base_bdev_geometry g_geo = {
 
 DEFINE_STUB(ftl_dev_tail_md_disk_size, size_t, (const struct spdk_ftl_dev *dev), 1);
 DEFINE_STUB(ftl_addr_is_written, bool, (struct ftl_band *band, struct ftl_addr addr), true);
+DEFINE_STUB(ftl_get_io_channel, struct spdk_io_channel *, (const struct spdk_ftl_dev *dev), NULL);
 DEFINE_STUB_V(ftl_band_set_state, (struct ftl_band *band, enum ftl_band_state state));
 DEFINE_STUB_V(ftl_free_io, (struct ftl_io *io));
 #if defined(DEBUG)
