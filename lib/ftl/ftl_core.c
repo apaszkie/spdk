@@ -1339,6 +1339,7 @@ ftl_alloc_io_nv_cache(struct ftl_io *parent, size_t num_blocks)
 		.iovcnt		= 0,
 		.num_blocks	= num_blocks,
 		.flags		= parent->flags | FTL_IO_CACHE,
+		.ioch		= ftl_get_io_channel(parent->dev),
 	};
 
 	return ftl_io_init_internal(&opts);
@@ -1707,6 +1708,7 @@ ftl_io_init_child_write(struct ftl_io *parent, struct ftl_addr addr, ftl_io_fn c
 		.num_blocks	= dev->xfer_size,
 		.cb_fn		= cb,
 		.iovcnt		= 0,
+		.ioch		= ftl_get_io_channel(dev),
 	};
 
 	io = ftl_io_init_internal(&opts);

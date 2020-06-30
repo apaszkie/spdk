@@ -433,8 +433,9 @@ ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move,
 	size_t block_off, i;
 	struct ftl_addr addr = move->addr;
 	struct ftl_io *io = NULL;
+	struct spdk_ftl_dev *dev = breloc->parent->dev;
 	struct ftl_io_init_opts opts = {
-		.dev		= breloc->parent->dev,
+		.dev		= dev,
 		.band		= breloc->band,
 		.size		= sizeof(*io),
 		.flags		= flags | FTL_IO_INTERNAL | FTL_IO_PHYSICAL_MODE,
@@ -448,6 +449,7 @@ ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move,
 		},
 		.iovcnt		= 1,
 		.cb_fn		= fn,
+		.ioch		= ftl_get_io_channel(dev),
 	};
 
 	io = ftl_io_init_internal(&opts);

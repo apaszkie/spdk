@@ -98,6 +98,9 @@ struct ftl_io_init_opts {
 	/* IO flags */
 	int                                     flags;
 
+	/* IO channel associated with IO */
+	struct spdk_io_channel			*ioch;
+
 	/* IO type */
 	enum ftl_io_type			type;
 
