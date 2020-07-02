@@ -463,12 +463,6 @@ ftl_band_set_addr(struct ftl_band *band, uint64_t lba, struct ftl_addr addr)
 }
 
 size_t
-ftl_band_age(const struct ftl_band *band)
-{
-	return (size_t)(band->dev->seq - band->seq);
-}
-
-size_t
 ftl_band_num_usable_blocks(const struct ftl_band *band)
 {
 	return band->num_zones * ftl_get_num_blocks_in_zone(band->dev);

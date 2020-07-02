@@ -2091,7 +2091,7 @@ ftl_band_calc_merit(struct ftl_band *band, size_t *threshold_valid)
 
 	/* Add one to avoid division by 0 */
 	vld_ratio = (double)invalid / (double)(valid + 1);
-	return vld_ratio * ftl_band_age(band);
+	return vld_ratio;
 }
 
 static struct ftl_band *

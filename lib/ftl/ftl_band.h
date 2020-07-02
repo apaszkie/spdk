@@ -185,7 +185,6 @@ struct ftl_band {
 uint64_t	ftl_band_block_offset_from_addr(struct ftl_band *band, struct ftl_addr addr);
 struct ftl_addr ftl_band_addr_from_block_offset(struct ftl_band *band, uint64_t block_off);
 void		ftl_band_set_state(struct ftl_band *band, enum ftl_band_state state);
-size_t		ftl_band_age(const struct ftl_band *band);
 void		ftl_band_acquire_lba_map(struct ftl_band *band);
 int		ftl_band_alloc_lba_map(struct ftl_band *band);
 void		ftl_band_clear_lba_map(struct ftl_band *band);
