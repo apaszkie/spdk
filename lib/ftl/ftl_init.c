@@ -123,6 +123,7 @@ static const struct spdk_ftl_conf	g_default_conf = {
 	 */
 	.allow_open_bands = false,
 	.max_io_channels = 128,
+	.use_append = true,
 	.nv_cache = {
 		/* Maximum number of concurrent requests */
 		.max_request_cnt = 2048,
