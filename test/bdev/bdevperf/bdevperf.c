@@ -1069,7 +1069,7 @@ end:
 
 static int
 bdevperf_construct_job(struct spdk_bdev *bdev, struct spdk_cpuset *cpumask,
-		       uint32_t offset, uint32_t length)
+		       uint64_t offset, uint64_t length)
 {
 	struct bdevperf_job *job;
 	struct bdevperf_task *task;
@@ -1210,8 +1210,8 @@ bdevperf_construct_multithread_jobs(void)
 	uint32_t i;
 	struct spdk_cpuset cpumask;
 	uint32_t num_cores;
-	uint32_t blocks_per_job;
-	uint32_t offset;
+	uint64_t blocks_per_job;
+	uint64_t offset;
 	int rc;
 
 	num_cores = 0;
