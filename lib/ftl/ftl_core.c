@@ -2093,22 +2093,6 @@ ftl_band_calc_merit(struct ftl_band *band, size_t *threshold_valid)
 	return vld_ratio * ftl_band_age(band);
 }
 
-static bool
-ftl_band_needs_defrag(struct ftl_band *band, struct spdk_ftl_dev *dev)
-{
-	struct spdk_ftl_conf *conf = &dev->conf;
-	size_t thld_vld;
-
-	/* If we're in dire need of free bands, every band is worth defragging */
-	if (ftl_current_limit(dev) == SPDK_FTL_LIMIT_CRIT) {
-		return true;
-	}
-
-	thld_vld = (ftl_band_num_usable_blocks(band) * conf->invalid_thld) / 100;
-
-	return band->merit > ftl_band_calc_merit(band, &thld_vld);
-}
-
 static struct ftl_band *
 ftl_select_defrag_band(struct spdk_ftl_dev *dev)
 {
@@ -2122,10 +2106,6 @@ ftl_select_defrag_band(struct spdk_ftl_dev *dev)
 			merit = band->merit;
 			mband = band;
 		}
-	}
-
-	if (mband && !ftl_band_needs_defrag(mband, dev)) {
-		mband = NULL;
 	}
 
 	return mband;
