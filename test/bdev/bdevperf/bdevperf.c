@@ -88,6 +88,7 @@ static bool g_wait_for_tests = false;
 static struct spdk_jsonrpc_request *g_request = NULL;
 static bool g_multithread_mode = false;
 static int g_timeout_in_sec;
+static uint16_t g_num_ftl_cores = 0;
 
 static struct spdk_poller *g_perf_timer = NULL;
 
@@ -1219,6 +1220,8 @@ bdevperf_construct_multithread_jobs(void)
 		num_cores++;
 	}
 
+	num_cores -= g_num_ftl_cores;
+
 	if (num_cores == 0) {
 		g_run_rc = -EINVAL;
 		return;
@@ -1235,6 +1238,9 @@ bdevperf_construct_multithread_jobs(void)
 		offset = 0;
 
 		SPDK_ENV_FOREACH_CORE(i) {
+			if (i < g_num_ftl_cores) {
+				continue;
+			}
 			spdk_cpuset_zero(&cpumask);
 			spdk_cpuset_set_cpu(&cpumask, i, true);
 
@@ -1254,6 +1260,10 @@ bdevperf_construct_multithread_jobs(void)
 			offset = 0;
 
 			SPDK_ENV_FOREACH_CORE(i) {
+				if (i < g_num_ftl_cores) {
+					continue;
+				}
+
 				spdk_cpuset_zero(&cpumask);
 				spdk_cpuset_set_cpu(&cpumask, i, true);
 
@@ -1500,6 +1510,10 @@ bdevperf_parse_arg(int ch, char *arg)
 			g_show_performance_real_time = 1;
 			g_show_performance_period_in_usec = tmp * 1000000;
 			break;
+		case 'N':
+			g_num_ftl_cores = tmp;
+			break;
+
 		default:
 			return -EINVAL;
 		}
@@ -1527,6 +1541,7 @@ bdevperf_usage(void)
 	printf(" -z                        start bdevperf, but wait for RPC to start tests\n");
 	printf(" -A                        abort the timeout I/O\n");
 	printf(" -C                        enable every core to send I/Os to each bdev\n");
+	printf(" -N <num>            	   number of cores reserved only for FTL\n");
 }
 
 static int
@@ -1685,7 +1700,7 @@ main(int argc, char **argv)
 	opts.reactor_mask = NULL;
 	opts.shutdown_cb = spdk_bdevperf_shutdown_cb;
 
-	if ((rc = spdk_app_parse_args(argc, argv, &opts, "xzfq:o:t:w:k:ACM:P:S:T:", NULL,
+	if ((rc = spdk_app_parse_args(argc, argv, &opts, "xzfq:o:t:w:k:ACM:P:S:T:N:", NULL,
 				      bdevperf_parse_arg, bdevperf_usage)) !=
 	    SPDK_APP_PARSE_ARGS_SUCCESS) {
 		return rc;
