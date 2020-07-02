@@ -281,19 +281,6 @@ zone_block_open_zone(struct block_zone *zone, struct spdk_bdev_io *bdev_io)
 	}
 }
 
-static void
-_zone_block_complete_unmap(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
-{
-	struct spdk_bdev_io *orig_io = cb_arg;
-	int status = success ? SPDK_BDEV_IO_STATUS_SUCCESS : SPDK_BDEV_IO_STATUS_FAILED;
-
-	/* Complete the original IO and then free the one that we created here
-	 * as a result of issuing an IO via submit_reqeust.
-	 */
-	spdk_bdev_io_complete(orig_io, status);
-	spdk_bdev_free_io(bdev_io);
-}
-
 static int
 zone_block_reset_zone(struct bdev_zone_block *bdev_node, struct zone_block_io_channel *ch,
 		      struct block_zone *zone, struct spdk_bdev_io *bdev_io)
@@ -311,9 +298,8 @@ zone_block_reset_zone(struct bdev_zone_block *bdev_node, struct zone_block_io_ch
 		zone->zone_info.state = SPDK_BDEV_ZONE_STATE_EMPTY;
 		zone->zone_info.write_pointer = zone->zone_info.zone_id;
 		pthread_spin_unlock(&zone->lock);
-		return spdk_bdev_unmap_blocks(bdev_node->base_desc, ch->base_ch,
-					      zone->zone_info.zone_id, zone->zone_info.capacity,
-					      _zone_block_complete_unmap, bdev_io);
+		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+		return 0;
 	default:
 		pthread_spin_unlock(&zone->lock);
 		return -EINVAL;
