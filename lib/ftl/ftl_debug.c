@@ -125,8 +125,7 @@ ftl_dev_dump_bands(struct spdk_ftl_dev *dev)
 }
 
 #endif /* defined(FTL_META_DEBUG) */
-
-#if defined(FTL_DUMP_STATS)
+#endif /* defined(DEBUG) */
 
 void
 ftl_dev_dump_stats(const struct spdk_ftl_dev *dev)
@@ -153,21 +152,18 @@ ftl_dev_dump_stats(const struct spdk_ftl_dev *dev)
 	waf = (double)dev->stats.write_total / (double)dev->stats.write_user;
 
 	spdk_uuid_fmt_lower(uuid, sizeof(uuid), &dev->uuid);
-	ftl_debug("\n");
-	ftl_debug("device UUID:         %s\n", uuid);
-	ftl_debug("device name:         %s\n", dev->name);
-	ftl_debug("num LBAs:            %zu\n", dev->num_lbas);
-	ftl_debug("total valid LBAs:    %zu\n", total);
-	ftl_debug("free bands:          %zu\n", dev->num_free);
-	ftl_debug("disk usage:          %.4lf\n", (double)total / (double)dev->num_lbas);
-	ftl_debug("total writes:        %"PRIu64"\n", dev->stats.write_total);
-	ftl_debug("user writes:         %"PRIu64"\n", dev->stats.write_user);
-	ftl_debug("WAF:                 %.4lf\n", waf);
-	ftl_debug("limits:\n");
+	printf("\n");
+	printf("device UUID:         %s\n", uuid);
+	printf("device name:         %s\n", dev->name);
+	printf("num LBAs:            %zu\n", dev->num_lbas);
+	printf("total valid LBAs:    %zu\n", total);
+	printf("free bands:          %zu\n", dev->num_free);
+	printf("disk usage:          %.4lf\n", (double)total / (double)dev->num_lbas);
+	printf("total writes:        %"PRIu64"\n", dev->stats.write_total);
+	printf("user writes:         %"PRIu64"\n", dev->stats.write_user);
+	printf("WAF:                 %.4lf\n", waf);
+	printf("limits:\n");
 	for (i = 0; i < SPDK_FTL_LIMIT_MAX; ++i) {
-		ftl_debug(" %5s: %"PRIu64"\n", limits[i], dev->stats.limits[i]);
+		printf(" %5s: %"PRIu64"\n", limits[i], dev->stats.limits[i]);
 	}
 }
-
-#endif /* defined(FTL_DUMP_STATS) */
-#endif /* defined(DEBUG) */
