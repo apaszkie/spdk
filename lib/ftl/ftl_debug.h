@@ -64,10 +64,6 @@ void ftl_dev_dump_bands(struct spdk_ftl_dev *dev);
 #define ftl_dev_dump_bands(dev)
 #endif
 
-#if defined(FTL_DUMP_STATS)
 void ftl_dev_dump_stats(const struct spdk_ftl_dev *dev);
-#else
-#define ftl_dev_dump_stats(dev)
-#endif
 
 #endif /* FTL_DEBUG_H */
