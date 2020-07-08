@@ -314,7 +314,7 @@ struct raid_bdev_module {
 	 * Callback to deinitialize the per IO channel resource.
 	 * Called when the bdev's IO channel is destroyed. Optional.
 	 */
-	void (*io_channel_resource_deinit)(struct raid_bdev *raid_bdev, void *resource);
+	void (*io_channel_resource_deinit)(void *resource);
 
 	TAILQ_ENTRY(raid_bdev_module) link;
 };

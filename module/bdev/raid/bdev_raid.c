@@ -186,8 +186,7 @@ raid_bdev_destroy_cb(void *io_device, void *ctx_buf)
 	assert(raid_ch->base_channel);
 
 	if (raid_bdev->module->io_channel_resource_deinit) {
-		raid_bdev->module->io_channel_resource_deinit(raid_bdev,
-				raid_bdev_io_channel_get_resource(raid_ch));
+		raid_bdev->module->io_channel_resource_deinit(raid_bdev_io_channel_get_resource(raid_ch));
 	}
 
 	for (i = 0; i < raid_ch->num_channels; i++) {
