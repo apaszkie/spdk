@@ -940,7 +940,7 @@ thread_exit_test(void)
 	CU_ASSERT(spdk_thread_is_exited(thread) == false);
 
 	/* Cause timeout forcefully. */
-	MOCK_SET(spdk_get_ticks, 15);
+	MOCK_SET(spdk_get_ticks, 1500);
 
 	poll_threads();
 
