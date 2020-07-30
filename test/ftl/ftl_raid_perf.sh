@@ -6,11 +6,11 @@ source $rootdir/test/common/autotest_common.sh
 source $testdir/common.sh
 
 tests=(\
-'-w write -q 32 -o 131072 -t 300' \
-'-w read -q 32 -o 131072 -t 60' \
-'-w randwrite -q 32 -o 4096 -t 300' \
-'-w randwrite -q 32 -o 4096 -t 300' \
-'-w randwrite -q 32 -o 4096 -t 300' \
+'-w write -q 32 -o 131072 -t 7200' \
+'-w read -q 32 -o 131072 -t 600' \
+'-w randwrite -q 32 -o 4096 -t 1800' \
+'-w randwrite -q 32 -o 4096 -t 1800' \
+'-w randwrite -q 32 -o 4096 -t 1800' \
 '-w randread -q 128 -o 4096 -t 300' \
 '-w randread -q 128 -o 4096 -t 300' \
 )
@@ -68,7 +68,7 @@ for (( i=0; i<${#tests[@]}; i++ )) do
 	log=drives_"$num_disks"_size_"$disk_size"_zs_"$zone_size"_wus_"$write_unit_size"_cm_"$core_mask"_ioc_"$io_cores"_"$test"
 	log="$RESULTS_DIR$log"
 
-	$rootdir/test/bdev/bdevperf/bdevperf -m $io_cores -C -T ftl0 --json $rootdir/ftl.json ${tests[$i]} |& tee "$log"
+	$rootdir/test/bdev/bdevperf/bdevperf -m $io_cores -C -T ftl0 --json $rootdir/ftl.json ${tests[$i]} -N 4 |& tee "$log"
 	total_iops=$(less $log | awk '/Total/ {print $4}' | tail -1)
 	total_mb=$(less $log | awk '/Total/ {print $6}' | tail -1)
 	total_writes=$(less $log | awk '/total writes/ {print $3}' | tail -1)
