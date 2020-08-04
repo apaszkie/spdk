@@ -48,6 +48,7 @@
 #include "ftl_addr.h"
 #include "ftl_io.h"
 #include "ftl_trace.h"
+#include "ftl_nv_cache.h"
 
 #ifdef SPDK_CONFIG_PMDK
 #include "libpmem.h"
@@ -83,32 +84,6 @@ struct ftl_global_md {
 	struct spdk_uuid			uuid;
 	/* Size of the l2p table */
 	uint64_t				num_lbas;
-};
-
-struct ftl_nv_cache {
-	/* Write buffer cache bdev */
-	struct spdk_bdev_desc			*bdev_desc;
-	/* Write pointer */
-	uint64_t				current_addr;
-	/* Number of available blocks left */
-	uint64_t				num_available;
-	/* Maximum number of blocks */
-	uint64_t				num_data_blocks;
-	/*
-	 * Phase of the current cycle of writes. Each time whole cache area is filled, the phase is
-	 * advanced. Current phase is saved in every IO's metadata, as well as in the header saved
-	 * in the first sector. By looking at the phase of each block, it's possible to find the
-	 * oldest block and replay the order of the writes when recovering the data from the cache.
-	 */
-	unsigned int				phase;
-	/* Indicates that the data can be written to the cache */
-	bool					ready;
-	/* Metadata pool */
-	struct spdk_mempool			*md_pool;
-	/* DMA buffer for writing the header */
-	void					*dma_buf;
-	/* Cache lock */
-	pthread_spinlock_t			lock;
 };
 
 struct ftl_batch {
@@ -510,13 +485,6 @@ ftl_dev_has_nv_cache(const struct spdk_ftl_dev *dev)
 {
 	return dev->nv_cache.bdev_desc != NULL;
 }
-
-#define FTL_NV_CACHE_HEADER_VERSION	(1)
-#define FTL_NV_CACHE_DATA_OFFSET	(1)
-#define FTL_NV_CACHE_PHASE_OFFSET	(62)
-#define FTL_NV_CACHE_PHASE_COUNT	(4)
-#define FTL_NV_CACHE_PHASE_MASK		(3ULL << FTL_NV_CACHE_PHASE_OFFSET)
-#define FTL_NV_CACHE_LBA_INVALID	(FTL_LBA_INVALID & ~FTL_NV_CACHE_PHASE_MASK)
 
 static inline bool
 ftl_nv_cache_phase_is_valid(unsigned int phase)

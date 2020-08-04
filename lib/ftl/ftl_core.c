@@ -46,6 +46,7 @@
 #include "ftl_io.h"
 #include "ftl_debug.h"
 #include "ftl_reloc.h"
+#include "ftl_nv_cache.h"
 
 struct ftl_band_flush {
 	struct spdk_ftl_dev		*dev;
