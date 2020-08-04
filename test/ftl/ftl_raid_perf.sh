@@ -47,10 +47,10 @@ trap 'killprocess $bdevperf_pid; exit 1' SIGINT SIGTERM EXIT
 waitforlisten $bdevperf_pid
 
 nvme_ctrls=""
-for (( j=0; j<$num_disks; j++ )) do
-	$rpc_py bdev_nvme_attach_controller -b nvme${j} -a ${devices[$j]} -t pcie
-	splits=$($rpc_py bdev_split_create -s $disk_size nvme${j}n1 1)
-	nvme_ctrls+="${splits[0]} "
+for (( j=0; j<num_disks; j++ )) do
+    $rpc_py bdev_nvme_attach_controller -b nvme${j} -a ${devices[$j]} -t pcie
+    splits=$($rpc_py bdev_split_create -s $disk_size nvme${j}n1 1)
+    nvme_ctrls+="${splits[0]} "
 done
 
 $rpc_py bdev_raid_create -z 32 -r 0 -b "$nvme_ctrls" -n raid
@@ -60,24 +60,24 @@ $rpc_py save_config > $rootdir/ftl.json
 killprocess $bdevperf_pid
 
 for (( i=0; i<${#tests[@]}; i++ )) do
-	timing_enter "${tests[$i]}"
+    timing_enter "${tests[$i]}"
 
-	test="${tests[$i]}"
-	test=${test//-/}
-	test=${test// /_}
-	log=drives_"$num_disks"_size_"$disk_size"_zs_"$zone_size"_wus_"$write_unit_size"_cm_"$core_mask"_ioc_"$io_cores"_"$test"
-	log="$RESULTS_DIR$log"
+    test="${tests[$i]}"
+    test=${test//-/}
+    test=${test// /_}
+    log=drives_"$num_disks"_size_"$disk_size"_zs_"$zone_size"_wus_"$write_unit_size"_cm_"$core_mask"_ioc_"$io_cores"_"$test"
+    log="$RESULTS_DIR$log"
 
-	$rootdir/test/bdev/bdevperf/bdevperf -m $io_cores -C -T ftl0 --json $rootdir/ftl.json ${tests[$i]} |& tee "$log"
-	total_iops=$(less $log | awk '/Total/ {print $4}' | tail -1)
-	total_mb=$(less $log | awk '/Total/ {print $6}' | tail -1)
-	total_writes=$(less $log | awk '/total writes/ {print $3}' | tail -1)
-	user_writes=$(less $log | awk '/user writes/ {print $3}' | tail -1)
-	waf=$(less $log | awk '/WAF/ {print $2}' | tail -1)
-	reloc_iops=$(less $log | awk '/reloc write IOPS/ {print $4}' | tail -1)
+    $rootdir/test/bdev/bdevperf/bdevperf -m $io_cores -C -T ftl0 --json $rootdir/ftl.json ${tests[$i]} |& tee "$log"
+    total_iops=$(less $log | awk '/Total/ {print $4}' | tail -1)
+    total_mb=$(less $log | awk '/Total/ {print $6}' | tail -1)
+    total_writes=$(less $log | awk '/total writes/ {print $3}' | tail -1)
+    user_writes=$(less $log | awk '/user writes/ {print $3}' | tail -1)
+    waf=$(less $log | awk '/WAF/ {print $2}' | tail -1)
+    reloc_iops=$(less $log | awk '/reloc write IOPS/ {print $4}' | tail -1)
 
-	echo $test,$num_disks,$disk_size,$zone_size,$write_unit_size,$core_mask,$io_cores,$total_iops,$total_mb,$total_writes,$user_writes,$waf,$reloc_iops >> "$RESULTS_DIR"log.csv
-	timing_exit "${tests[$i]}"
+    echo $test,$num_disks,$disk_size,$zone_size,$write_unit_size,$core_mask,$io_cores,$total_iops,$total_mb,$total_writes,$user_writes,$waf,$reloc_iops >> "$RESULTS_DIR"log.csv
+    timing_exit "${tests[$i]}"
 done
 
 trap - SIGINT SIGTERM EXIT

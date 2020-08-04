@@ -1541,7 +1541,7 @@ bdevperf_usage(void)
 	printf(" -z                        start bdevperf, but wait for RPC to start tests\n");
 	printf(" -A                        abort the timeout I/O\n");
 	printf(" -C                        enable every core to send I/Os to each bdev\n");
-	printf(" -N <num>            	   number of cores reserved only for FTL\n");
+	printf(" -N <num>                  number of cores reserved only for FTL\n");
 }
 
 static int

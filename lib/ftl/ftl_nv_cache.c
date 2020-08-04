@@ -160,4 +160,3 @@ ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 
 	return 0;
 }
-

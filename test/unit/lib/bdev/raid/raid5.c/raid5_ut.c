@@ -40,7 +40,8 @@
 #include "bdev/raid/raid5.c"
 
 DEFINE_STUB_V(raid_bdev_module_list_add, (struct raid_bdev_module *raid_module));
-DEFINE_STUB_V(raid_bdev_io_complete, (struct raid_bdev_io *raid_io, enum spdk_bdev_io_status status));
+DEFINE_STUB_V(raid_bdev_io_complete, (struct raid_bdev_io *raid_io,
+				      enum spdk_bdev_io_status status));
 DEFINE_STUB(raid_bdev_io_complete_part, bool,
 	    (struct raid_bdev_io *raid_io, uint64_t completed,
 	     enum spdk_bdev_io_status status),
