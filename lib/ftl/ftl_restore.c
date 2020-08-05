@@ -752,7 +752,11 @@ ftl_nv_cache_block_read_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_
 		return;
 	}
 
-	ftl_nv_cache_unpack_lba(*(uint64_t *)block->md_buf, &lba, &phase);
+	/* FIXME */
+	ftl_nv_cache_restore_complete(restore, -EIO);
+	return;
+
+	/* ftl_nv_cache_unpack_lba(*(uint64_t *)block->md_buf, &lba, &phase); */
 	if (spdk_unlikely(phase != restore->phase)) {
 		if (range->current_addr < range->last_addr) {
 			ftl_nv_cache_recover_block(block);
@@ -846,7 +850,11 @@ ftl_nv_cache_scan_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 		return;
 	}
 
-	ftl_nv_cache_unpack_lba(*(uint64_t *)block->md_buf, &lba, &phase);
+	/* FIXME */
+	ftl_nv_cache_restore_complete(restore, -EIO);
+	return;
+
+	/* ftl_nv_cache_unpack_lba(*(uint64_t *)block->md_buf, &lba, &phase); */
 	range = &restore->range[phase];
 	range->num_blocks++;
 

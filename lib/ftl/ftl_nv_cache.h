@@ -35,6 +35,7 @@
 #define LIB_FTL_FTL_NV_CACHE_H_
 
 #include "spdk/stdinc.h"
+#include "spdk/assert.h"
 
 #define FTL_NV_CACHE_HEADER_VERSION (1)
 #define FTL_NV_CACHE_DATA_OFFSET    (1)
@@ -44,6 +45,19 @@
 #define FTL_NV_CACHE_LBA_INVALID    (FTL_LBA_INVALID & ~FTL_NV_CACHE_PHASE_MASK)
 
 struct spdk_ftl_dev;
+
+struct ftl_nv_cache_block_metadata {
+	uint64_t lba;
+};
+
+struct ftl_nv_cache_chunk {
+	uint64_t offset;
+	uint64_t write_pointer;
+	uint64_t blocks_written;
+	uint64_t blocks_skipped;
+	TAILQ_ENTRY(ftl_nv_cache_chunk) entry;
+	uint64_t id;
+};
 
 struct ftl_nv_cache {
 	/* Write buffer cache bdev */
@@ -68,10 +82,37 @@ struct ftl_nv_cache {
 	/* DMA buffer for writing the header */
 	void                    *dma_buf;
 
+	struct ftl_nv_cache_chunk *chunk;
+	uint64_t chunk_count;
+	uint64_t chunk_size;
+	struct ftl_nv_cache_chunk *chunk_current;
+	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_free_list;
+	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_full_list;
+
 	/* Cache lock */
 	pthread_spinlock_t          lock;
 };
 
 int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name);
+
+uint64_t ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache,
+				    struct ftl_io *io);
+
+void ftl_nv_cache_commit_wr_buffer(struct ftl_nv_cache *nv_cache,
+				   struct ftl_io *io);
+
+static inline void
+ftl_nv_cache_pack_lba(uint64_t lba, void *md_buf)
+{
+	struct ftl_nv_cache_block_metadata *md = md_buf;
+	md->lba = lba;
+}
+
+static inline uint64_t
+ftl_nv_cache_unpack_lba(void *md_buf)
+{
+	struct ftl_nv_cache_block_metadata *md = md_buf;
+	return md->lba;
+}
 
 #endif  /* LIB_FTL_FTL_NV_CACHE_H_ */

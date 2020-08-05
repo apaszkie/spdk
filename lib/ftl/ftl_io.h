@@ -128,6 +128,7 @@ struct ftl_io_init_opts {
 };
 
 struct ftl_io_channel;
+struct ftl_nv_cache_chunk;
 
 struct ftl_wbuf_entry {
 	/* IO channel that owns the write bufer entry */
@@ -288,6 +289,9 @@ struct ftl_io {
 
 	/* Used by retry and write completion queues */
 	TAILQ_ENTRY(ftl_io)			ioch_entry;
+
+	/* Reference to the chunk within NV cache */
+	struct ftl_nv_cache_chunk *nv_cache_chunk;
 };
 
 /* Metadata IO */

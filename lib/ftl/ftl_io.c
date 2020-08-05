@@ -376,7 +376,7 @@ _ftl_io_free(struct ftl_io *io)
 {
 	struct ftl_io_channel *ioch;
 
-	assert(LIST_EMPTY(&io->children));
+	/* FIXME assert(LIST_EMPTY(&io->children)); */
 
 	if (io->flags & FTL_IO_VECTOR_LBA) {
 		free(io->lba.vector);

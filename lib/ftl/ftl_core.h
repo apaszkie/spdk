@@ -508,25 +508,6 @@ ftl_nv_cache_prev_phase(unsigned int current)
 	return phases[current];
 }
 
-static inline uint64_t
-ftl_nv_cache_pack_lba(uint64_t lba, unsigned int phase)
-{
-	assert(ftl_nv_cache_phase_is_valid(phase));
-	return (lba & ~FTL_NV_CACHE_PHASE_MASK) | ((uint64_t)phase << FTL_NV_CACHE_PHASE_OFFSET);
-}
-
-static inline void
-ftl_nv_cache_unpack_lba(uint64_t in_lba, uint64_t *out_lba, unsigned int *phase)
-{
-	*out_lba = in_lba & ~FTL_NV_CACHE_PHASE_MASK;
-	*phase = (in_lba & FTL_NV_CACHE_PHASE_MASK) >> FTL_NV_CACHE_PHASE_OFFSET;
-
-	/* If the phase is invalid the block wasn't written yet, so treat the LBA as invalid too */
-	if (!ftl_nv_cache_phase_is_valid(*phase) || *out_lba == FTL_NV_CACHE_LBA_INVALID) {
-		*out_lba = FTL_LBA_INVALID;
-	}
-}
-
 static inline bool
 ftl_is_append_supported(const struct spdk_ftl_dev *dev)
 {

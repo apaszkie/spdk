@@ -1388,6 +1388,7 @@ ftl_nv_cache_submit_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 		ftl_io_complete(io);
 	}
 
+	ftl_nv_cache_commit_wr_buffer(nv_cache, io);
 	spdk_bdev_free_io(bdev_io);
 }
 
@@ -1415,6 +1416,7 @@ ftl_submit_nv_cache(void *ctx)
 			    spdk_strerror(-rc), io->addr.offset, io->num_blocks);
 		spdk_mempool_put(nv_cache->md_pool, io->md);
 		io->status = -EIO;
+		ftl_nv_cache_commit_wr_buffer(nv_cache, io);
 		ftl_io_complete(io);
 		return;
 	}
@@ -1428,14 +1430,13 @@ ftl_nv_cache_fill_md(struct ftl_io *io, unsigned int phase)
 {
 	struct spdk_bdev *bdev;
 	struct ftl_nv_cache *nv_cache = &io->dev->nv_cache;
-	uint64_t block_off, lba;
+	uint64_t block_off;
 	void *md_buf = io->md;
 
 	bdev = spdk_bdev_desc_get_bdev(nv_cache->bdev_desc);
 
 	for (block_off = 0; block_off < io->num_blocks; ++block_off) {
-		lba = ftl_nv_cache_pack_lba(ftl_io_get_lba(io, block_off), phase);
-		memcpy(md_buf, &lba, sizeof(lba));
+		ftl_nv_cache_pack_lba(ftl_io_get_lba(io, block_off), md_buf);
 		md_buf += spdk_bdev_get_md_size(bdev);
 	}
 }
@@ -1446,7 +1447,7 @@ _ftl_write_nv_cache(void *ctx)
 	struct ftl_io *child, *io = ctx;
 	struct spdk_ftl_dev *dev = io->dev;
 	struct spdk_thread *thread;
-	unsigned int phase;
+	unsigned int phase = 0; /* XXX */
 	uint64_t num_blocks;
 
 	thread = spdk_io_channel_get_thread(io->ioch);
@@ -1468,7 +1469,7 @@ _ftl_write_nv_cache(void *ctx)
 		}
 
 		/* Reserve area on the write buffer cache */
-		child->addr.offset = ftl_reserve_nv_cache(&dev->nv_cache, &num_blocks, &phase);
+		child->addr.offset = ftl_nv_cache_get_wr_buffer(&dev->nv_cache, child);
 		if (child->addr.offset == FTL_LBA_INVALID) {
 			spdk_mempool_put(dev->nv_cache.md_pool, child->md);
 			ftl_io_free(child);
@@ -1476,12 +1477,16 @@ _ftl_write_nv_cache(void *ctx)
 			break;
 		}
 
-		/* Shrink the IO if there isn't enough room in the cache to fill the whole iovec */
-		if (spdk_unlikely(num_blocks != ftl_io_iovec_len_left(io))) {
-			ftl_io_shrink_iovec(child, num_blocks);
-		}
+		/* Shrink the IO if there isn't enough room in the cache to fill the
+		 * whole iovec
+		 */
+		/* FIXME
+		 * if (spdk_unlikely(num_blocks != ftl_io_iovec_len_left(io))) {
+		 *	ftl_io_shrink_iovec(child, num_blocks);
+		 * }
+		 */
 
-		ftl_nv_cache_fill_md(child, phase);
+		ftl_nv_cache_fill_md(child, phase);/* XXX ??? Metatdata for all blocks */
 		ftl_submit_nv_cache(child);
 	}
 
