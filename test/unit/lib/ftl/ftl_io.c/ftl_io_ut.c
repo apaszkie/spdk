@@ -40,6 +40,7 @@
 #include "ftl/ftl_init.c"
 #include "ftl/ftl_core.c"
 #include "ftl/ftl_band.c"
+#include "ftl/ftl_nv_cache.c"
 
 DEFINE_STUB(spdk_bdev_io_get_append_location, uint64_t, (struct spdk_bdev_io *bdev_io), 0);
 DEFINE_STUB(spdk_bdev_desc_get_bdev, struct spdk_bdev *, (struct spdk_bdev_desc *desc), NULL);
