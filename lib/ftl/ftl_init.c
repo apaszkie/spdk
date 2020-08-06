@@ -1900,6 +1900,12 @@ ftl_dev_free(struct spdk_ftl_dev *dev, spdk_ftl_init_fn cb_fn, void *cb_arg,
 int
 spdk_ftl_dev_free(struct spdk_ftl_dev *dev, spdk_ftl_init_fn cb_fn, void *cb_arg)
 {
+	clock_gettime(CLOCK_MONOTONIC_RAW, &dev->stats.end);
+	double test_time = (dev->stats.end.tv_nsec - dev->stats.begin.tv_nsec) / 1000000000.0 +
+			   (dev->stats.end.tv_sec  - dev->stats.begin.tv_sec);
+	SPDK_NOTICELOG("IO took %f seconds, user writes %lu,\n IOPS: %f\n",
+		       test_time, dev->stats.write_user, (double)dev->stats.write_user / test_time);
+
 	return ftl_dev_free(dev, cb_fn, cb_arg, spdk_get_thread());
 }
 

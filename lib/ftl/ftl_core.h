@@ -76,6 +76,9 @@ struct ftl_stats {
 
 	/* Number of limits applied */
 	uint64_t				limits[SPDK_FTL_LIMIT_MAX];
+
+	struct timespec				begin;
+	struct timespec				end;
 };
 
 struct ftl_global_md {
