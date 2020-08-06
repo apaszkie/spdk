@@ -107,7 +107,7 @@ static const struct spdk_ftl_conf	g_default_conf = {
 	/* 15% spare blocks */
 	.lba_rsvd = 20,
 	/* 6M write buffer per each IO channel */
-	.write_buffer_size = 6 * 1024 * 1024,
+	.write_buffer_size = 3 * 1024 * 1024,
 	/* 90% band fill threshold */
 	.band_thld = 90,
 	/* Max 256 IO depth per band relocate */
