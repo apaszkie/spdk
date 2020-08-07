@@ -300,18 +300,6 @@ ftl_get_entry_from_addr(struct spdk_ftl_dev *dev, struct ftl_addr addr)
 	return &ioch->wbuf_entries[entry_offset];
 }
 
-static struct ftl_addr
-ftl_get_addr_from_entry(struct ftl_wbuf_entry *entry)
-{
-	struct ftl_io_channel *ioch = entry->ioch;
-	struct ftl_addr addr = {};
-
-	addr.cached = 1;
-	addr.cache_offset = (uint64_t)entry->index << ioch->dev->ioch_shift | ioch->index;
-
-	return addr;
-}
-
 size_t
 spdk_ftl_io_size(void)
 {
@@ -1302,60 +1290,6 @@ ftl_nv_cache_wrap_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 	spdk_bdev_free_io(bdev_io);
 }
 
-static void
-ftl_nv_cache_wrap(void *ctx)
-{
-	struct ftl_nv_cache *nv_cache = ctx;
-	int rc;
-
-	rc = ftl_nv_cache_write_header(nv_cache, false, ftl_nv_cache_wrap_cb, nv_cache);
-	if (spdk_unlikely(rc != 0)) {
-		SPDK_ERRLOG("Unable to write non-volatile cache metadata header: %s\n",
-			    spdk_strerror(-rc));
-		/* TODO: go into read-only mode */
-		assert(0);
-	}
-}
-
-static uint64_t
-ftl_reserve_nv_cache(struct ftl_nv_cache *nv_cache, size_t *num_blocks, unsigned int *phase)
-{
-	struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(nv_cache->bdev_desc);
-	struct spdk_ftl_dev *dev = SPDK_CONTAINEROF(nv_cache, struct spdk_ftl_dev, nv_cache);
-	uint64_t num_available, cache_size, cache_addr = FTL_LBA_INVALID;
-
-	cache_size = spdk_bdev_get_num_blocks(bdev);
-
-	pthread_spin_lock(&nv_cache->lock);
-	if (spdk_unlikely(nv_cache->num_available == 0 || !nv_cache->ready)) {
-		goto out;
-	}
-
-	num_available = spdk_min(nv_cache->num_available, *num_blocks);
-	num_available = spdk_min(num_available, dev->conf.nv_cache.max_request_cnt);
-
-	if (spdk_unlikely(nv_cache->current_addr + num_available > cache_size)) {
-		*num_blocks = cache_size - nv_cache->current_addr;
-	} else {
-		*num_blocks = num_available;
-	}
-
-	cache_addr = nv_cache->current_addr;
-	nv_cache->current_addr += *num_blocks;
-	nv_cache->num_available -= *num_blocks;
-	*phase = nv_cache->phase;
-
-	if (nv_cache->current_addr == spdk_bdev_get_num_blocks(bdev)) {
-		nv_cache->current_addr = FTL_NV_CACHE_DATA_OFFSET;
-		nv_cache->phase = ftl_nv_cache_next_phase(nv_cache->phase);
-		nv_cache->ready = false;
-		spdk_thread_send_msg(ftl_get_core_thread(dev), ftl_nv_cache_wrap, nv_cache);
-	}
-out:
-	pthread_spin_unlock(&nv_cache->lock);
-	return cache_addr;
-}
-
 static struct ftl_io *
 ftl_alloc_io_nv_cache(struct ftl_io *parent, size_t num_blocks)
 {
@@ -1371,6 +1305,21 @@ ftl_alloc_io_nv_cache(struct ftl_io *parent, size_t num_blocks)
 	return ftl_io_init_internal(&opts);
 }
 
+static inline void
+ftl_update_nv_cache_l2p_update(struct ftl_io *io)
+{
+	struct spdk_ftl_dev *dev = io->dev;
+	uint64_t lba = io->lba.single;
+	struct ftl_addr next_addr = io->addr;
+	struct ftl_addr waek_addr = { .offset = FTL_LBA_INVALID };
+	uint64_t end_block = lba + io->num_blocks;
+
+	do {
+		ftl_update_l2p(dev, lba, next_addr, waek_addr, false);
+		next_addr.cache_offset++;
+	} while (lba++ < end_block);
+}
+
 static void
 ftl_nv_cache_submit_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 {
@@ -1378,17 +1327,22 @@ ftl_nv_cache_submit_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 	struct ftl_nv_cache *nv_cache = &io->dev->nv_cache;
 
 	if (spdk_unlikely(!success)) {
-		SPDK_ERRLOG("Non-volatile cache write failed at %"PRIx64"\n", io->addr.offset);
+		SPDK_ERRLOG("Non-volatile cache write failed at %"PRIx64"\n",
+			    io->addr.offset);
 		io->status = -EIO;
+
+		/* TODO(mariusz&wojtek) Consider how to handle error */
+	} else {
+		ftl_update_nv_cache_l2p_update(io);
 	}
 
+	ftl_nv_cache_commit_wr_buffer(nv_cache, io);
 	ftl_io_dec_req(io);
 	if (ftl_io_done(io)) {
 		spdk_mempool_put(nv_cache->md_pool, io->md);
 		ftl_io_complete(io);
 	}
 
-	ftl_nv_cache_commit_wr_buffer(nv_cache, io);
 	spdk_bdev_free_io(bdev_io);
 }
 
@@ -1406,7 +1360,7 @@ ftl_submit_nv_cache(void *ctx)
 	thread = spdk_io_channel_get_thread(io->ioch);
 
 	rc = spdk_bdev_write_blocks_with_md(nv_cache->bdev_desc, ioch->cache_ioch,
-					    ftl_io_iovec_addr(io), io->md, io->addr.offset,
+					    ftl_io_iovec_addr(io), io->md, io->addr.cache_offset,
 					    io->num_blocks, ftl_nv_cache_submit_cb, io);
 	if (rc == -ENOMEM) {
 		spdk_thread_send_msg(thread, ftl_submit_nv_cache, io);
@@ -1450,12 +1404,13 @@ _ftl_write_nv_cache(void *ctx)
 	unsigned int phase = 0; /* XXX */
 	uint64_t num_blocks;
 
-	thread = spdk_io_channel_get_thread(io->ioch);
+	thread = dev->core_thread;
 
 	while (io->pos < io->num_blocks) {
 		num_blocks = ftl_io_iovec_len_left(io);
 
 		child = ftl_alloc_io_nv_cache(io, num_blocks);
+		child->ioch = dev->ioch; /* FIXME */
 		if (spdk_unlikely(!child)) {
 			spdk_thread_send_msg(thread, _ftl_write_nv_cache, io);
 			return;
@@ -1469,7 +1424,8 @@ _ftl_write_nv_cache(void *ctx)
 		}
 
 		/* Reserve area on the write buffer cache */
-		child->addr.offset = ftl_nv_cache_get_wr_buffer(&dev->nv_cache, child);
+		child->addr.cache_offset = ftl_nv_cache_get_wr_buffer(&dev->nv_cache, child);
+		child->addr.cached = true;
 		if (child->addr.offset == FTL_LBA_INVALID) {
 			spdk_mempool_put(dev->nv_cache.md_pool, child->md);
 			ftl_io_free(child);
@@ -1477,16 +1433,7 @@ _ftl_write_nv_cache(void *ctx)
 			break;
 		}
 
-		/* Shrink the IO if there isn't enough room in the cache to fill the
-		 * whole iovec
-		 */
-		/* FIXME
-		 * if (spdk_unlikely(num_blocks != ftl_io_iovec_len_left(io))) {
-		 *	ftl_io_shrink_iovec(child, num_blocks);
-		 * }
-		 */
-
-		ftl_nv_cache_fill_md(child, phase);/* XXX ??? Metatdata for all blocks */
+		ftl_nv_cache_fill_md(child, phase);
 		ftl_submit_nv_cache(child);
 	}
 
@@ -1495,12 +1442,13 @@ _ftl_write_nv_cache(void *ctx)
 	}
 }
 
-static void
-ftl_write_nv_cache(struct ftl_io *parent)
+static int
+ftl_write_nv_cache(struct ftl_io *io)
 {
-	ftl_io_reset(parent);
-	parent->flags |= FTL_IO_CACHE;
-	_ftl_write_nv_cache(parent);
+	io->flags |= FTL_IO_CACHE;
+	_ftl_write_nv_cache(io);
+
+	return 0;
 }
 
 int
@@ -1635,92 +1583,49 @@ ftl_update_stats(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry)
 	dev->stats.write_total++;
 }
 
-static void
-ftl_update_l2p(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry,
-	       struct ftl_addr addr)
+void
+ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
+	       struct ftl_addr new_addr, struct ftl_addr weak_addr, bool io_weak)
 {
 	struct ftl_addr prev_addr;
-	struct ftl_wbuf_entry *prev;
-	struct ftl_band *band;
-	int valid;
-	bool io_weak = entry->io_flags & FTL_IO_WEAK;
 
-	prev_addr = ftl_l2p_get(dev, entry->lba);
+	prev_addr = ftl_l2p_get(dev, lba);
 	if (ftl_addr_invalid(prev_addr)) {
-		ftl_l2p_set(dev, entry->lba, addr);
+		/* First time write */
+		ftl_l2p_set(dev, lba, new_addr);
 		return;
 	}
 
-	if (ftl_addr_cached(prev_addr)) {
-		prev = ftl_get_entry_from_addr(dev, prev_addr);
-		pthread_spin_lock(&prev->lock);
+	if (io_weak && !ftl_addr_cmp(prev_addr, weak_addr)) {
+		/* It's weak IO (GC IO or NV cache to NAND compaction,
+		 * but in the mean time a new user IO which had updated mapping */
+		return;
+	}
 
-		/* Re-read the L2P under the lock to protect against updates */
-		/* to this LBA from other threads */
-		prev_addr = ftl_l2p_get(dev, entry->lba);
+	if (ftl_addr_cached(new_addr)) {
+		/*
+		 * Previous block on NV Cache, New one to NV Cache
+		 * Latest write goes to NV cache, so set L2P, background operation
+		 * need to handle this situation
+		 */
+		ftl_l2p_set(dev, lba, new_addr);
 
-		/* If the entry is no longer in cache, another write has been */
-		/* scheduled in the meantime, so we can return to evicted path */
 		if (!ftl_addr_cached(prev_addr)) {
-			pthread_spin_unlock(&prev->lock);
-			goto evicted;
+			/* Invalidate LBA map */
+			ftl_invalidate_addr(dev, prev_addr);
 		}
 
-		/*
-		 * Relocating block could still reside in cache due to fact that write
-		 * buffers are independent for each IO channel and enough amount of data
-		 * (write unit size) must be collected before it will be submitted to lower
-		 * layer.
-		 * When previous entry wasn't overwritten invalidate old address and entry.
-		 * Otherwise skip relocating block.
-		 */
-		if (io_weak &&
-		    /* Check if prev_addr was updated in meantime */
-		    !(ftl_addr_cmp(prev_addr, ftl_get_addr_from_entry(prev)) &&
-		      /* Check if relocating address it the same as in previous entry */
-		      ftl_addr_cmp(prev->addr, entry->addr))) {
-			pthread_spin_unlock(&prev->lock);
-			return;
-		}
-
-		/*
-		 * If previous entry is part of cache and was written into disk remove
-		 * and invalidate it
-		 */
-		if (prev->valid) {
-			ftl_invalidate_addr(dev, prev->addr);
-			prev->valid = false;
-		}
-
-		ftl_l2p_set(dev, entry->lba, addr);
-		pthread_spin_unlock(&prev->lock);
 		return;
 	}
 
-evicted:
-	/*
-	 *  If the L2P's physical address is different than what we expected we don't need to
-	 *  do anything (someone's already overwritten our data).
-	 */
-	if (io_weak && !ftl_addr_cmp(prev_addr, entry->addr)) {
-		return;
+	/* Validate address */
+	ftl_l2p_set(dev, lba, new_addr);
+	ftl_band_set_addr(ftl_band_from_addr(dev, new_addr), lba, new_addr);
+
+	/* L2P not changed in the meantime we can update location */
+	if (!ftl_addr_cached(prev_addr)) {
+		ftl_invalidate_addr(dev, prev_addr);
 	}
-
-	/* Lock the band containing previous physical address. This assures atomic changes to */
-	/* the L2P as wall as metadata. The valid bits in metadata are used to */
-	/* check weak writes validity. */
-	band = ftl_band_from_addr(dev, prev_addr);
-	pthread_spin_lock(&band->lba_map.lock);
-
-	valid = ftl_invalidate_addr_unlocked(dev, prev_addr);
-
-	/* If the address has been invalidated already, we don't want to update */
-	/* the L2P for weak writes, as it means the write is no longer valid. */
-	if (!io_weak || valid) {
-		ftl_l2p_set(dev, entry->lba, addr);
-	}
-
-	pthread_spin_unlock(&band->lba_map.lock);
 }
 
 static struct ftl_io *
@@ -2000,69 +1905,11 @@ ftl_process_writes(struct spdk_ftl_dev *dev)
 	return 0;
 }
 
-static void
-ftl_fill_wbuf_entry(struct ftl_wbuf_entry *entry, struct ftl_io *io)
-{
-	memcpy(entry->payload, ftl_io_iovec_addr(io), FTL_BLOCK_SIZE);
-
-	if (entry->io_flags & FTL_IO_WEAK) {
-		entry->band = ftl_band_from_addr(io->dev, io->addr);
-		entry->addr = ftl_band_next_addr(entry->band, io->addr, io->pos);
-		__atomic_fetch_add(&entry->band->num_reloc_blocks, 1, __ATOMIC_SEQ_CST);
-	}
-
-	entry->trace = io->trace;
-	entry->lba = ftl_io_current_lba(io);
-}
-
-static int
-ftl_wbuf_fill(struct ftl_io *io)
-{
-	struct spdk_ftl_dev *dev = io->dev;
-	struct ftl_io_channel *ioch;
-	struct ftl_wbuf_entry *entry;
-
-	ioch = ftl_io_channel_get_ctx(io->ioch);
-
-	while (io->pos < io->num_blocks) {
-		if (ftl_io_current_lba(io) == FTL_LBA_INVALID) {
-			ftl_io_advance(io, 1);
-			continue;
-		}
-
-		entry = ftl_acquire_wbuf_entry(ioch, io->flags);
-		if (!entry) {
-			TAILQ_INSERT_TAIL(&ioch->retry_queue, io, ioch_entry);
-			return 0;
-		}
-
-		ftl_fill_wbuf_entry(entry, io);
-
-		ftl_trace_wbuf_fill(dev, io);
-		ftl_update_l2p(dev, entry, ftl_get_addr_from_entry(entry));
-		ftl_io_advance(io, 1);
-
-		/* Needs to be done after L2P is updated to avoid race with */
-		/* write completion callback when it's processed faster than */
-		/* L2P is set in update_l2p(). */
-		spdk_ring_enqueue(ioch->submit_queue, (void **)&entry, 1, NULL);
-	}
-
-	if (ftl_io_done(io)) {
-		if (ftl_dev_has_nv_cache(dev) && !(io->flags & FTL_IO_BYPASS_CACHE)) {
-			ftl_write_nv_cache(io);
-		} else {
-			TAILQ_INSERT_TAIL(&ioch->write_cmpl_queue, io, ioch_entry);
-		}
-	}
-
-	return 0;
-}
-
 static bool
 ftl_dev_needs_defrag(struct spdk_ftl_dev *dev)
 {
-	const struct spdk_ftl_limit *limit = ftl_get_limit(dev, SPDK_FTL_LIMIT_START);
+	const struct spdk_ftl_limit *limit = ftl_get_limit(dev,
+					     SPDK_FTL_LIMIT_START);
 
 	if (ftl_reloc_is_halted(dev->reloc)) {
 		return false;
@@ -2177,8 +2024,7 @@ ftl_submit_write_leaf(struct ftl_io *io)
 	return rc;
 }
 
-void
-ftl_io_write(struct ftl_io *io)
+void ftl_io_write(struct ftl_io *io)
 {
 	struct spdk_ftl_dev *dev = io->dev;
 	struct ftl_io_channel *ioch = ftl_io_channel_get_ctx(io->ioch);
@@ -2190,16 +2036,16 @@ ftl_io_write(struct ftl_io *io)
 	}
 
 	/* For normal IOs we just need to copy the data onto the write buffer */
-	if (!(io->flags & FTL_IO_MD)) {
-		ftl_io_call_foreach_child(io, ftl_wbuf_fill);
-	} else {
-		/* Metadata has its own buffer, so it doesn't have to be copied, so just */
-		/* send it the the core thread and schedule the write immediately */
-		if (ftl_check_core_thread(dev)) {
-			ftl_io_call_foreach_child(io, ftl_submit_write_leaf);
+
+	if (ftl_check_core_thread(dev)) {
+		if (!(io->flags & FTL_IO_MD)) {
+			ftl_io_call_foreach_child(io, ftl_write_nv_cache);
 		} else {
-			spdk_thread_send_msg(ftl_get_core_thread(dev), _ftl_io_write, io);
+			ftl_io_call_foreach_child(io, ftl_submit_write_leaf);
 		}
+	} else {
+		spdk_thread_send_msg(ftl_get_core_thread(dev), _ftl_io_write,
+				     io);
 	}
 }
 

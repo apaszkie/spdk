@@ -221,6 +221,9 @@ struct ftl_io {
 	/* First block address */
 	struct ftl_addr				addr;
 
+	/* First block address XXX Set it */
+	struct ftl_addr				weak_addr;
+
 	/* Number of processed blocks */
 	size_t					pos;
 

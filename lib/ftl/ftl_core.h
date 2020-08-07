@@ -514,4 +514,8 @@ ftl_is_append_supported(const struct spdk_ftl_dev *dev)
 	return dev->conf.use_append;
 }
 
+void
+ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
+	       struct ftl_addr new_addr, struct ftl_addr weak_addr, bool io_weak);
+
 #endif /* FTL_CORE_H */

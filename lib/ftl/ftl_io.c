@@ -339,10 +339,18 @@ ftl_io_erase_init(struct ftl_band *band, size_t num_blocks, ftl_io_fn cb)
 	return io;
 }
 
+static void _ftl_user_io_done(void *arg)
+{
+	struct ftl_io *io = arg;
+	io->user_fn(io->cb_ctx, io->status);
+}
+
+
 static void
 _ftl_user_cb(struct ftl_io *io, void *arg, int status)
 {
-	io->user_fn(arg, status);
+	spdk_thread_send_msg(spdk_io_channel_get_thread(io->ioch),
+			     _ftl_user_io_done, io);
 }
 
 int
@@ -401,7 +409,11 @@ ftl_io_remove_child(struct ftl_io *io)
 	pthread_spin_lock(&parent->lock);
 	LIST_REMOVE(io, child_entry);
 	parent_done = parent->done && LIST_EMPTY(&parent->children);
-	parent->status = parent->status ? : io->status;
+
+	if (io->status) {
+		parent->status = io->status;
+	}
+
 	pthread_spin_unlock(&parent->lock);
 
 	return parent_done;
@@ -438,7 +450,7 @@ ftl_io_alloc_child(struct ftl_io *parent)
 {
 	struct ftl_io *io;
 
-	io = ftl_io_alloc(parent->ioch);
+	io = ftl_io_alloc(parent->dev->ioch);
 	if (spdk_unlikely(!io)) {
 		return NULL;
 	}

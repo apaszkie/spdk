@@ -128,7 +128,7 @@ static const struct spdk_ftl_conf	g_default_conf = {
 		/* Maximum number of concurrent requests */
 		.max_request_cnt = 2048,
 		/* Maximum number of blocks per request */
-		.max_request_size = 16,
+		.max_request_size = 32,
 	}
 };
 

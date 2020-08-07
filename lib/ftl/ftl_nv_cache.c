@@ -167,6 +167,10 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 	nv_cache->chunk_size = FTL_NV_CACHE_CHUNK_SIZE_BYTES / FTL_BLOCK_SIZE;
 	nv_cache->chunk_count = spdk_bdev_get_num_blocks(bdev) / nv_cache->chunk_size;
 	nv_cache->chunk = calloc(nv_cache->chunk_count, sizeof(nv_cache->chunk[0]));
+	if (!nv_cache->chunk) {
+		SPDK_ERRLOG("Cannot allocate memory for chunks\n");
+		return -1;
+	}
 	for (i = 0; i < nv_cache->chunk_count; i++) {
 		struct ftl_nv_cache_chunk *chunk = &nv_cache->chunk[i];
 
@@ -228,7 +232,6 @@ static inline void _chunk_advance_blocks(
 		assert(0);
 	}
 }
-
 
 uint64_t ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache,
 				    struct ftl_io *io)
