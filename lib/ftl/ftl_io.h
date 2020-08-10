@@ -125,6 +125,8 @@ struct ftl_io_init_opts {
 
 	/* Callback's context */
 	void					*cb_ctx;
+
+	uint64_t				*lba_vector;
 };
 
 struct ftl_io_channel;

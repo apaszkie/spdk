@@ -100,6 +100,9 @@ struct ftl_reloc_move {
 	struct ftl_io				*io;
 
 	STAILQ_ENTRY(ftl_reloc_move)		entry;
+
+#define FTL_MAX_RELOC_VECTOR_LBA 128
+	uint64_t				lba_vector[FTL_MAX_RELOC_VECTOR_LBA];
 };
 
 struct ftl_band_reloc {
@@ -446,6 +449,7 @@ ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move,
 		.iovcnt		= 1,
 		.cb_fn		= fn,
 		.ioch		= move->task->ioch,
+		.lba_vector	= move->lba_vector,
 	};
 
 	io = ftl_io_init_internal(&opts);
@@ -800,6 +804,10 @@ ftl_reloc_init(struct spdk_ftl_dev *dev)
 
 	if (reloc->max_qdepth < reloc->max_active) {
 		SPDK_ERRLOG("max_qdepth need to be greater or equal max_acitve relocs\n");
+	}
+
+	if (dev->xfer_size > FTL_MAX_RELOC_VECTOR_LBA) {
+		SPDK_ERRLOG("Reloc vector lba is too small");
 		goto error;
 	}
 
