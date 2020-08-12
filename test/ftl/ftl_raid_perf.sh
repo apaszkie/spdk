@@ -7,12 +7,13 @@ source $testdir/common.sh
 
 tests=(\
 '-w write -q 32 -o 131072 -t 7200' \
-'-w read -q 32 -o 131072 -t 600' \
 '-w randwrite -q 32 -o 4096 -t 1800' \
 '-w randwrite -q 32 -o 4096 -t 1800' \
 '-w randwrite -q 32 -o 4096 -t 1800' \
-'-w randread -q 128 -o 4096 -t 300' \
-'-w randread -q 128 -o 4096 -t 300' \
+'-w randwrite -q 32 -o 4096 -t 1800' \
+'-w randwrite -q 32 -o 4096 -t 300' \
+'-w randwrite -q 32 -o 4096 -t 300' \
+'-w randwrite -q 32 -o 4096 -t 300' \
 )
 
 devices=(\
@@ -53,7 +54,7 @@ for (( j=0; j<$num_disks; j++ )) do
 	nvme_ctrls+="${splits[0]} "
 done
 
-$rpc_py bdev_raid_create -z 32 -r 0 -b "$nvme_ctrls" -n raid
+$rpc_py bdev_raid_create -z 16 -r 0 -b "$nvme_ctrls" -n raid
 $rpc_py bdev_zone_block_create -z $zone_size -o 1 -b zone0 -w $write_unit_size -n raid
 $rpc_py bdev_ftl_create -b ftl0 -d zone0 --core_mask $core_mask --overprovisioning 20
 $rpc_py save_config > $rootdir/ftl.json
@@ -61,6 +62,16 @@ killprocess $bdevperf_pid
 
 for (( i=0; i<${#tests[@]}; i++ )) do
 	timing_enter "${tests[$i]}"
+	$rootdir/scripts/setup.sh reset
+
+	for (( j=0; j<$num_disks; j++ )) do
+		nvme=$(ls -l /sys/block/nvme* | awk -v bdf=${devices[$j]} '$0 ~ bdf {print $11}' | xargs -d/ -i  echo {} | tail -2 | head -1)
+		nvme=/dev/$nvme
+		host_writes=$(nvme intel smart-log-add $nvme | awk '/host_bytes_written/ {print $5}')
+		nand_writes=$(nvme intel smart-log-add $nvme | awk '/nand_bytes_written/ {print $5}')
+		echo $nvme,$host_writes,$nand_writes >> "$RESULTS_DIR"log.csv
+	done
+	HUGEMEM=8192 $rootdir/scripts/setup.sh
 
 	test="${tests[$i]}"
 	test=${test//-/}
@@ -77,8 +88,8 @@ for (( i=0; i<${#tests[@]}; i++ )) do
 	reloc_iops=$(less $log | awk '/reloc write IOPS/ {print $4}' | tail -1)
 
 	echo $test,$num_disks,$disk_size,$zone_size,$write_unit_size,$core_mask,$io_cores,$total_iops,$total_mb,$total_writes,$user_writes,$waf,$reloc_iops >> "$RESULTS_DIR"log.csv
+
 	timing_exit "${tests[$i]}"
 done
 
 trap - SIGINT SIGTERM EXIT
-rm -f $ftl_bdev_conf
