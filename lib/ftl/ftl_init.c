@@ -1612,11 +1612,6 @@ spdk_ftl_dev_init(const struct spdk_ftl_dev_init_opts *_opts, spdk_ftl_init_fn c
 		goto fail_sync;
 	}
 
-	if (ftl_nv_cache_init(dev, opts.cache_bdev)) {
-		SPDK_ERRLOG("Unable to initialize persistent cache\n");
-		goto fail_sync;
-	}
-
 	if (ftl_dev_init_io_channel(dev)) {
 		SPDK_ERRLOG("Unable to initialize IO channels\n");
 		goto fail_sync;
@@ -1625,6 +1620,11 @@ spdk_ftl_dev_init(const struct spdk_ftl_dev_init_opts *_opts, spdk_ftl_init_fn c
 	if (ftl_dev_init_zones(init_ctx)) {
 		SPDK_ERRLOG("Failed to initialize zones\n");
 		goto fail_async;
+	}
+
+	if (ftl_nv_cache_init(dev, opts.cache_bdev)) {
+		SPDK_ERRLOG("Unable to initialize persistent cache\n");
+		goto fail_sync;
 	}
 
 	return 0;

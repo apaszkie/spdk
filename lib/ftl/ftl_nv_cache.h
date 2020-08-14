@@ -37,6 +37,8 @@
 #include "spdk/stdinc.h"
 #include "spdk/assert.h"
 
+#include "ftl_io.h"
+
 #define FTL_NV_CACHE_HEADER_VERSION (1)
 #define FTL_NV_CACHE_DATA_OFFSET    (1)
 #define FTL_NV_CACHE_PHASE_OFFSET   (62)
@@ -45,6 +47,7 @@
 #define FTL_NV_CACHE_LBA_INVALID    (FTL_LBA_INVALID & ~FTL_NV_CACHE_PHASE_MASK)
 
 struct spdk_ftl_dev;
+struct ftl_nv_cache;
 
 struct ftl_nv_cache_block_metadata {
 	uint64_t lba;
@@ -53,15 +56,32 @@ struct ftl_nv_cache_block_metadata {
 struct ftl_nv_cache_chunk {
 	uint64_t offset;
 	uint64_t write_pointer;
+	uint64_t read_pointer;
 	uint64_t blocks_written;
 	uint64_t blocks_skipped;
+	uint64_t blocks_compacted;
 	TAILQ_ENTRY(ftl_nv_cache_chunk) entry;
 	uint64_t id;
 };
 
+struct ftl_nv_cache_compaction {
+	struct ftl_batch *batch;
+	void (*process)(struct ftl_nv_cache_compaction *compaction);
+	struct ftl_nv_cache *nv_cache;
+	struct {
+		uint64_t idx;
+		uint64_t remaining;
+		struct ftl_wbuf_entry *entry;
+	} iter;
+	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_list;
+	struct ftl_wbuf_entry entries[];
+};
+
 struct ftl_nv_cache {
+	/* FTL device */
+	struct spdk_ftl_dev *ftl_dev;
 	/* Write buffer cache bdev */
-	struct spdk_bdev_desc           *bdev_desc;
+	struct spdk_bdev_desc   *bdev_desc;
 	/* Write pointer */
 	uint64_t                current_addr;
 	/* Number of available blocks left */
@@ -85,9 +105,14 @@ struct ftl_nv_cache {
 	struct ftl_nv_cache_chunk *chunk;
 	uint64_t chunk_count;
 	uint64_t chunk_size;
+	uint64_t chunk_free_count;
+	uint64_t chunk_full_count;
+	uint64_t chunk_compaction_threshold;
 	struct ftl_nv_cache_chunk *chunk_current;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_free_list;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_full_list;
+	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_compacted_list;
+	struct ftl_nv_cache_compaction *compaction_process;
 
 	/* Cache lock */
 	pthread_spinlock_t          lock;
@@ -100,6 +125,8 @@ uint64_t ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache,
 
 void ftl_nv_cache_commit_wr_buffer(struct ftl_nv_cache *nv_cache,
 				   struct ftl_io *io);
+
+void ftl_nv_cache_compact(struct spdk_ftl_dev *dev);
 
 static inline void
 ftl_nv_cache_pack_lba(uint64_t lba, void *md_buf)

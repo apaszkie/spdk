@@ -912,7 +912,7 @@ ftl_evict_cache_entry(struct spdk_ftl_dev *dev, struct ftl_wbuf_entry *entry)
 		goto clear;
 	}
 
-	ftl_l2p_set(dev, entry->lba, entry->addr);
+	ftl_l2p_set(dev, entry->lba, entry->addr); /* TODO Inspect this */
 clear:
 	entry->valid = false;
 unlock:
@@ -1380,18 +1380,20 @@ ftl_submit_nv_cache(void *ctx)
 }
 
 static void
-ftl_nv_cache_fill_md(struct ftl_io *io, unsigned int phase)
+ftl_nv_cache_fill_md(struct ftl_io *io)
 {
 	struct spdk_bdev *bdev;
 	struct ftl_nv_cache *nv_cache = &io->dev->nv_cache;
 	uint64_t block_off;
 	void *md_buf = io->md;
+	uint64_t meta_size;
 
 	bdev = spdk_bdev_desc_get_bdev(nv_cache->bdev_desc);
+	meta_size = spdk_bdev_get_md_size(bdev);
 
 	for (block_off = 0; block_off < io->num_blocks; ++block_off) {
 		ftl_nv_cache_pack_lba(ftl_io_get_lba(io, block_off), md_buf);
-		md_buf += spdk_bdev_get_md_size(bdev);
+		md_buf += meta_size;
 	}
 }
 
@@ -1401,7 +1403,6 @@ _ftl_write_nv_cache(void *ctx)
 	struct ftl_io *child, *io = ctx;
 	struct spdk_ftl_dev *dev = io->dev;
 	struct spdk_thread *thread;
-	unsigned int phase = 0; /* XXX */
 	uint64_t num_blocks;
 
 	thread = dev->core_thread;
@@ -1433,7 +1434,7 @@ _ftl_write_nv_cache(void *ctx)
 			break;
 		}
 
-		ftl_nv_cache_fill_md(child, phase);
+		ftl_nv_cache_fill_md(child);
 		ftl_submit_nv_cache(child);
 	}
 
@@ -2313,6 +2314,7 @@ ftl_task_core(void *ctx)
 
 	ftl_process_writes(dev);
 	ftl_process_relocs(dev);
+	ftl_nv_cache_compact(dev);
 
 	return SPDK_POLLER_BUSY;
 }
