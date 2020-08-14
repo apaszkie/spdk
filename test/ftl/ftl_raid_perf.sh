@@ -82,3 +82,4 @@ done
 
 trap - SIGINT SIGTERM EXIT
 rm -f $ftl_bdev_conf
+
