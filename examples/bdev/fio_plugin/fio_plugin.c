@@ -352,7 +352,7 @@ spdk_fio_new_thread_fn(struct spdk_thread *thread)
 			TAILQ_INSERT_TAIL(&reactor->threads, fio_thread, link);
 			reactor->thread_count++;
 
-			rc = pthread_create(&g_init_thread_id, NULL, &spdk_fio_reactor, fio_thread);
+			rc = pthread_create(&reactor->pthread, NULL, &spdk_fio_reactor, fio_thread);
 			if (rc != 0) {
 				SPDK_ERRLOG("Unable to spawn thread.\n");
 			}

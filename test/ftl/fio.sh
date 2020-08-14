@@ -35,7 +35,7 @@ export FTL_JSON_CONF=$testdir/config/ftl.json
 
 trap "fio_kill; exit 1" SIGINT SIGTERM EXIT
 
-"$SPDK_BIN_DIR/spdk_tgt" --json <(gen_ftl_nvme_conf) &
+"$SPDK_BIN_DIR/spdk_tgt" -m 1f --json <(gen_ftl_nvme_conf) &
 svcpid=$!
 waitforlisten $svcpid
 
@@ -43,9 +43,9 @@ $rpc_py bdev_nvme_attach_controller -b nvme0 -a $device -t pcie
 $rpc_py bdev_ocssd_create -c nvme0 -b nvme0n1
 
 if [ -z "$uuid" ]; then
-	$rpc_py bdev_ftl_create -b ftl0 -d nvme0n1
+	$rpc_py bdev_ftl_create -b ftl0 -d nvme0n1 --core_mask 7
 else
-	$rpc_py bdev_ftl_create -b ftl0 -d nvme0n1 -u $uuid
+	$rpc_py bdev_ftl_create -b ftl0 -d nvme0n1 -u $uuid --core_mask 7
 fi
 
 waitforbdev ftl0
@@ -65,4 +65,3 @@ for test in ${tests}; do
 	timing_exit $test
 done
 
-rm -f $FTL_JSON_CONF
