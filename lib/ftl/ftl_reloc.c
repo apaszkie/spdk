@@ -73,9 +73,6 @@ struct ftl_reloc_task {
 	/* Queue of moves that task is processing */
 	struct spdk_ring			*move_queue;
 
-	/* Read/write buffer pool */
-	struct spdk_mempool			*buffer_pool;
-
 	STAILQ_ENTRY(ftl_reloc_task)		entry;
 };
 
@@ -165,6 +162,7 @@ struct ftl_reloc {
 	/* Queue of free move objects */
 	struct ftl_reloc_move			*move_buffer;
 	STAILQ_HEAD(, ftl_reloc_move)		free_move_queue;
+	void					*payload;
 
 	/* Move completion queue */
 	struct spdk_ring			*move_cmpl_queue;
@@ -271,7 +269,6 @@ ftl_reloc_write_cb(struct ftl_io *io, void *arg, int status)
 	struct ftl_band_reloc *breloc = move->breloc;
 	struct ftl_reloc *reloc = breloc->parent;
 
-	spdk_mempool_put(move->task->buffer_pool, move->data);
 	spdk_ring_enqueue(reloc->move_cmpl_queue, (void **)&move, 1, NULL);
 
 	if (status) {
@@ -500,16 +497,9 @@ static int
 ftl_reloc_read(struct ftl_reloc_move *move)
 {
 	struct ftl_band_reloc *breloc = move->breloc;
-	struct ftl_reloc_task *task = move->task;
-
-	move->data = spdk_mempool_get(task->buffer_pool);
-	if (!move->data) {
-		return -ENOMEM;
-	}
 
 	move->io = ftl_reloc_io_init(breloc, move, ftl_reloc_read_cb, FTL_IO_READ, 0);
 	if (!move->io) {
-		spdk_mempool_put(task->buffer_pool, move->data);
 		return -ENOMEM;
 	}
 
@@ -758,17 +748,6 @@ ftl_reloc_init_task(struct ftl_reloc *reloc, struct spdk_thread *thread)
 		goto error;
 	}
 
-	task->buffer_pool = spdk_mempool_create(pool_name,
-						task->reloc->max_qdepth,
-						task->reloc->xfer_size * FTL_BLOCK_SIZE,
-						SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-						SPDK_ENV_SOCKET_ID_ANY);
-	if (!task->buffer_pool) {
-		SPDK_ERRLOG("Failed to create reloc buffer pool\n");
-		goto error;
-	}
-
-
 	spdk_thread_send_msg(task->thread, _ftl_reloc_init_task, task);
 	return task;
 error:
@@ -828,9 +807,21 @@ ftl_reloc_init(struct spdk_ftl_dev *dev)
 		goto error;
 	}
 
+	reloc->payload = spdk_zmalloc(reloc->max_qdepth * reloc->xfer_size * FTL_BLOCK_SIZE,
+			FTL_BLOCK_SIZE, NULL,
+			SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
+
+	if (!reloc->payload) {
+		SPDK_ERRLOG("Failed to create reloc buffer pool\n");
+		goto error;
+	}
+
 	STAILQ_INIT(&reloc->free_move_queue);
+	struct ftl_reloc_move *move;
 	for (i = 0; i < reloc->max_qdepth; ++i) {
-		STAILQ_INSERT_TAIL(&reloc->free_move_queue, &reloc->move_buffer[i], entry);
+		move = &reloc->move_buffer[i];
+		move->data = (char *)reloc->payload + i * FTL_BLOCK_SIZE * dev->xfer_size;
+		STAILQ_INSERT_TAIL(&reloc->free_move_queue, move, entry);
 	}
 
 	reloc->move_cmpl_queue = spdk_ring_create(SPDK_RING_TYPE_MP_SC,
@@ -925,7 +916,6 @@ ftl_reloc_free_task(void *ctx)
 	spdk_poller_unregister(&task->poller);
 	spdk_put_io_channel(task->ioch);
 	spdk_ring_free(task->move_queue);
-	spdk_mempool_free(task->buffer_pool);
 
 	if (dev->conf.core_mask) {
 		spdk_thread_exit(task->thread);
@@ -985,6 +975,7 @@ ftl_reloc_free(struct ftl_reloc *reloc)
 	}
 
 	spdk_ring_free(reloc->move_cmpl_queue);
+	spdk_dma_free(reloc->payload);
 	free(reloc->move_buffer);
 	free(reloc->brelocs);
 	free(reloc);
