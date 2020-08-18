@@ -254,7 +254,12 @@ ftl_io_init_internal(const struct ftl_io_init_opts *opts)
 			io->lba.single = parent->lba.single + parent->pos;
 		}
 
-		iov = &parent->iov[parent->iov_pos];
+		if (opts->iovs[0].iov_base) {
+			iov = &opts->iovs[0];
+		} else {
+			iov = &parent->iov[parent->iov_pos];
+		}
+
 		iov_cnt = parent->iov_cnt - parent->iov_pos;
 		iov_off = parent->iov_off;
 	} else {
