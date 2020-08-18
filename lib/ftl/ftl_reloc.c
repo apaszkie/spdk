@@ -81,9 +81,6 @@ struct ftl_reloc_move {
 
 	struct ftl_reloc_task			*task;
 
-	/* Start addr */
-	struct ftl_addr				addr;
-
 	/* Number of logical blocks */
 	size_t					num_blocks;
 
@@ -100,6 +97,9 @@ struct ftl_reloc_move {
 
 #define FTL_MAX_RELOC_VECTOR_LBA 128
 	uint64_t				lba_vector[FTL_MAX_RELOC_VECTOR_LBA];
+
+	struct ftl_reloc_chunk			chunk_vector[FTL_MAX_RELOC_VECTOR_LBA];
+	size_t					num_chunks;
 };
 
 struct ftl_band_reloc {
@@ -279,6 +279,19 @@ ftl_reloc_write_cb(struct ftl_io *io, void *arg, int status)
 }
 
 static void
+ftl_reloc_read_child_cb(struct ftl_io *io, void *arg, int status)
+{
+	/* TODO: We should handle fail on relocation read. We need to inform */
+	/* user that this group of blocks is bad (update l2p with bad block address and */
+	/* put it to lba_map/sector_lba). Maybe we could also retry read with smaller granularity? */
+	if (status) {
+		SPDK_ERRLOG("Reloc child read failed with status: %d\n", status);
+		assert(false);
+		return;
+	}
+}
+
+static void
 ftl_reloc_read_cb(struct ftl_io *io, void *arg, int status)
 {
 	struct ftl_reloc_move *move = arg;
@@ -405,13 +418,13 @@ ftl_reloc_find_valid_blocks(struct ftl_band_reloc *breloc,
 }
 
 static size_t
-ftl_reloc_next_blocks(struct ftl_band_reloc *breloc, struct ftl_addr *addr)
+ftl_reloc_next_blocks(struct ftl_band_reloc *breloc, struct ftl_addr *addr, size_t _num_blocks)
 {
 	size_t i, num_blocks = 0;
 	struct spdk_ftl_dev *dev = breloc->parent->dev;
 
 	for (i = 0; i < ftl_get_num_punits(dev); ++i) {
-		num_blocks = ftl_reloc_find_valid_blocks(breloc, breloc->parent->xfer_size, addr);
+		num_blocks = ftl_reloc_find_valid_blocks(breloc, _num_blocks, addr);
 		ftl_reloc_iter_next_zone(breloc);
 
 		if (num_blocks || ftl_reloc_iter_done(breloc)) {
@@ -424,10 +437,10 @@ ftl_reloc_next_blocks(struct ftl_band_reloc *breloc, struct ftl_addr *addr)
 
 static struct ftl_io *
 ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move,
-		  ftl_io_fn fn, enum ftl_io_type io_type, int flags)
+		  ftl_io_fn fn, enum ftl_io_type io_type, int flags, struct ftl_addr _addr)
 {
-	size_t block_off, i;
-	struct ftl_addr addr = move->addr;
+	size_t block_off, i, j;
+	struct ftl_addr addr = _addr;
 	struct ftl_io *io = NULL;
 	struct spdk_ftl_dev *dev = breloc->parent->dev;
 	struct ftl_io_init_opts opts = {
@@ -455,24 +468,74 @@ ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move,
 	}
 
 	io->cb_ctx = move;
-	io->addr = move->addr;
+	io->addr = addr;
 
-	if (flags & FTL_IO_VECTOR_LBA) {
-		for (i = 0; i < io->num_blocks; ++i, ++addr.offset) {
+	if (!(flags & FTL_IO_VECTOR_LBA)) {
+		return io;
+	}
+
+	size_t lba_idx = 0;
+	io->num_chunks = move->num_chunks;
+	for (i = 0; i < move->num_chunks; ++i) {
+		addr = move->chunk_vector[i].addr;
+		io->chunk[i] = move->chunk_vector[i];
+
+		for (j = 0; j < move->chunk_vector[i].num_blocks; ++j) {
 			block_off = ftl_band_block_offset_from_addr(breloc->band, addr);
+			addr.offset++;
 
 			if (!ftl_band_block_offset_valid(breloc->band, block_off)) {
-				io->lba.vector[i] = FTL_LBA_INVALID;
+				io->lba.vector[lba_idx] = FTL_LBA_INVALID;
+				lba_idx++;
 				continue;
 			}
 
-			io->lba.vector[i] = breloc->band->lba_map.map[block_off];
+			io->lba.vector[lba_idx] = breloc->band->lba_map.map[block_off];
+			lba_idx++;
 		}
 	}
 
-	ftl_trace_lba_io_init(io->dev, io);
-
 	return io;
+}
+
+static int
+ftl_reloc_io_child_init(struct ftl_io *parent, struct ftl_band_reloc *breloc,
+			struct ftl_reloc_move *move,
+			ftl_io_fn fn, enum ftl_io_type io_type, int flags, void *data, struct ftl_addr *addr,
+			size_t num_blocks)
+{
+	struct ftl_io *io = NULL;
+	struct spdk_ftl_dev *dev = breloc->parent->dev;
+	struct ftl_io_init_opts opts = {
+		.dev		= dev,
+		.parent		= parent,
+		.io		= NULL,
+		.band		= breloc->band,
+		.size		= sizeof(*io),
+		.flags		= flags | FTL_IO_INTERNAL | FTL_IO_PHYSICAL_MODE,
+		.type		= io_type,
+		.num_blocks	= num_blocks,
+		.iovs		= {
+			{
+				.iov_base = data,
+				.iov_len = num_blocks * FTL_BLOCK_SIZE,
+			}
+		},
+		.iovcnt		= 1,
+		.cb_fn		= fn,
+		.ioch		= move->task->ioch,
+	};
+
+	io = ftl_io_init_internal(&opts);
+	if (!io) {
+		assert(0);
+		return -ENOMEM;
+	}
+
+	io->cb_ctx = move;
+	io->addr = *addr;
+
+	return 0;
 }
 
 static int
@@ -482,7 +545,7 @@ ftl_reloc_write(struct ftl_reloc_move *move)
 	int io_flags =  FTL_IO_WEAK | FTL_IO_VECTOR_LBA | FTL_IO_BYPASS_CACHE;
 
 	move->io = ftl_reloc_io_init(breloc, move, ftl_reloc_write_cb,
-				     FTL_IO_WRITE, io_flags);
+				     FTL_IO_WRITE, io_flags, move->chunk_vector[0].addr);
 
 	/* Try again later if IO allocation fails */
 	if (!move->io) {
@@ -497,10 +560,23 @@ static int
 ftl_reloc_read(struct ftl_reloc_move *move)
 {
 	struct ftl_band_reloc *breloc = move->breloc;
+	struct ftl_addr addr;
+	size_t num_blocks = 0, chunk_off;
+	void *data = move->data;
 
-	move->io = ftl_reloc_io_init(breloc, move, ftl_reloc_read_cb, FTL_IO_READ, 0);
+	move->io = ftl_reloc_io_init(breloc, move, ftl_reloc_read_cb, FTL_IO_READ, 0, move->chunk_vector[0].addr);
 	if (!move->io) {
 		return -ENOMEM;
+	}
+
+	for (chunk_off = 0; chunk_off < move->num_chunks; ++chunk_off) {
+		num_blocks = move->chunk_vector[chunk_off].num_blocks;
+		addr = move->chunk_vector[chunk_off].addr;
+
+		ftl_reloc_io_child_init(move->io, breloc, move, ftl_reloc_read_child_cb, FTL_IO_READ, 0,
+					data, &addr, num_blocks);
+
+		data = (char *)data + num_blocks * FTL_BLOCK_SIZE;
 	}
 
 	ftl_io_read(move->io);
@@ -515,7 +591,7 @@ ftl_reloc_process_moves(struct ftl_band_reloc *breloc)
 	struct ftl_reloc_move *move;
 	struct ftl_reloc_task *task;
 	struct ftl_addr addr = {};
-	size_t max_qdepth;
+	size_t max_qdepth, i, num_remaining, num_blocks;
 
 	max_qdepth = band->high_prio ? reloc->max_qdepth : reloc->max_qdepth / reloc->num_active;
 
@@ -530,7 +606,22 @@ ftl_reloc_process_moves(struct ftl_band_reloc *breloc)
 				return;
 			}
 
-			move->num_blocks = ftl_reloc_next_blocks(breloc, &addr);
+			i = 0;
+			num_remaining = reloc->xfer_size;
+			while (num_remaining) {
+				num_blocks = ftl_reloc_next_blocks(breloc, &addr, num_remaining);
+				if (num_blocks == 0) {
+					break;
+				}
+
+				move->chunk_vector[i].addr = addr;
+				move->chunk_vector[i].num_blocks = num_blocks;
+				move->num_chunks++;
+				num_remaining -= num_blocks;
+				move->num_blocks += num_blocks;
+				i++;
+			}
+
 			if (!move->num_blocks) {
 				return;
 			}
@@ -540,7 +631,6 @@ ftl_reloc_process_moves(struct ftl_band_reloc *breloc)
 			move->state = FTL_RELOC_STATE_READ;
 			move->task = task;
 			move->breloc = breloc;
-			move->addr = addr;
 
 			spdk_ring_enqueue(task->move_queue, (void **)&move, 1, NULL);
 		}
@@ -584,6 +674,9 @@ ftl_reloc_release(struct ftl_band_reloc *breloc)
 			assert(reloc->num_defrag_bands > 0);
 			reloc->num_defrag_bands--;
 		}
+	} else {
+		if (breloc->defrag)
+			SPDK_ERRLOG("This should never happen in this scenario\n");
 	}
 }
 
@@ -638,7 +731,7 @@ ftl_reloc_process_move_completions(struct ftl_reloc *reloc)
 	struct ftl_reloc_move *move;
 	struct ftl_band_reloc *breloc;
 	struct ftl_addr addr;
-	size_t i, j, num_outstanding;
+	size_t i, j, num_outstanding, chunk_off;
 
 	if (spdk_ring_count(reloc->move_cmpl_queue) == 0) {
 		return;
@@ -649,15 +742,19 @@ ftl_reloc_process_move_completions(struct ftl_reloc *reloc)
 	for (i = 0; i < num_outstanding; ++i) {
 		move = moves[i];
 		breloc = move->breloc;
-		addr = move->addr;
-		for (j = 0; j < move->num_blocks; ++j) {
-			size_t block_off;
-			addr.offset = move->addr.offset + j;
-			block_off = ftl_band_block_offset_from_addr(breloc->band, addr);
-			ftl_reloc_clr_block(breloc, block_off);
+		for (chunk_off = 0; chunk_off < move->num_chunks; ++chunk_off) {
+			addr = move->chunk_vector[chunk_off].addr;
+			for (j = 0; j < move->chunk_vector[chunk_off].num_blocks; ++j) {
+				size_t block_off;
+				block_off = ftl_band_block_offset_from_addr(breloc->band, addr);
+				addr.offset++;
+				ftl_reloc_clr_block(breloc, block_off);
+			}
 		}
 
 		breloc->num_outstanding--;
+		move->num_blocks = 0;
+		move->num_chunks = 0;
 		STAILQ_INSERT_HEAD(&reloc->free_move_queue, move, entry);
 	}
 }
@@ -808,8 +905,8 @@ ftl_reloc_init(struct spdk_ftl_dev *dev)
 	}
 
 	reloc->payload = spdk_zmalloc(reloc->max_qdepth * reloc->xfer_size * FTL_BLOCK_SIZE,
-			FTL_BLOCK_SIZE, NULL,
-			SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
+				      FTL_BLOCK_SIZE, NULL,
+				      SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 
 	if (!reloc->payload) {
 		SPDK_ERRLOG("Failed to create reloc buffer pool\n");

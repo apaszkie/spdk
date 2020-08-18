@@ -83,6 +83,11 @@ enum ftl_io_type {
 
 #define FTL_IO_MAX_IOVEC 256
 
+struct ftl_reloc_chunk {
+	struct ftl_addr				addr;
+	size_t					num_blocks;
+};
+
 struct ftl_io_init_opts {
 	struct spdk_ftl_dev			*dev;
 
@@ -127,6 +132,7 @@ struct ftl_io_init_opts {
 	void					*cb_ctx;
 
 	uint64_t				*lba_vector;
+
 };
 
 struct ftl_io_channel;
@@ -290,6 +296,9 @@ struct ftl_io {
 
 	/* Used by retry and write completion queues */
 	TAILQ_ENTRY(ftl_io)			ioch_entry;
+
+	struct ftl_reloc_chunk			chunk[128];
+	size_t					num_chunks;
 };
 
 /* Metadata IO */

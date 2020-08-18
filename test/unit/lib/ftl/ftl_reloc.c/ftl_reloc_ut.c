@@ -322,7 +322,7 @@ test_reloc_iter_full(void)
 		    (ftl_get_num_blocks_in_zone(dev) / reloc->xfer_size);
 
 	for (i = 0; i < num_iters; i++) {
-		num_blocks = ftl_reloc_next_blocks(breloc, &addr);
+		num_blocks = ftl_reloc_next_blocks(breloc, &addr, reloc->xfer_size);
 		CU_ASSERT_EQUAL(num_blocks, reloc->xfer_size);
 	}
 
@@ -334,7 +334,7 @@ test_reloc_iter_full(void)
 	/* is not divisible by xfer_size */
 	reminder = ftl_get_num_blocks_in_zone(dev) % reloc->xfer_size;
 	for (i = 0; i < num_iters; i++) {
-		num_blocks = ftl_reloc_next_blocks(breloc, &addr);
+		num_blocks = ftl_reloc_next_blocks(breloc, &addr, reloc->xfer_size);
 		CU_ASSERT_EQUAL(reminder, num_blocks);
 	}
 

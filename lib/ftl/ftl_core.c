@@ -1998,11 +1998,22 @@ ftl_process_writes(struct spdk_ftl_dev *dev)
 static void
 ftl_fill_wbuf_entry(struct ftl_wbuf_entry *entry, struct ftl_io *io)
 {
+	size_t i, j;
 	memcpy(entry->payload, ftl_io_iovec_addr(io), FTL_BLOCK_SIZE);
 
 	if (entry->io_flags & FTL_IO_WEAK) {
-		entry->band = ftl_band_from_addr(io->dev, io->addr);
-		entry->addr = ftl_band_next_addr(entry->band, io->addr, io->pos);
+		size_t pos = 0;
+		for (i = 0; i < io->num_chunks; i++) {
+			for (j = 0; j < io->chunk[i].num_blocks; j++) {
+				if (pos == io->pos) {
+					entry->band = io->band;
+					entry->addr.offset = io->chunk[i].addr.offset + j;
+					goto found;
+				}
+				pos++;
+			}
+		}
+found:
 		__atomic_fetch_add(&entry->band->num_reloc_blocks, 1, __ATOMIC_SEQ_CST);
 	}
 
