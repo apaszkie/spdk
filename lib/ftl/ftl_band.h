@@ -201,6 +201,7 @@ size_t		ftl_band_user_blocks_left(const struct ftl_band *band, size_t offset);
 size_t		ftl_band_user_blocks(const struct ftl_band *band);
 void		ftl_band_set_addr(struct ftl_band *band, uint64_t lba,
 				  struct ftl_addr addr);
+void 		ftl_band_set_addr_unlocked(struct ftl_band *band, uint64_t lba, struct ftl_addr addr);
 struct ftl_band *ftl_band_from_addr(struct spdk_ftl_dev *dev, struct ftl_addr addr);
 struct ftl_zone *ftl_band_zone_from_addr(struct ftl_band *band, struct ftl_addr);
 void		ftl_band_md_clear(struct ftl_band *band);

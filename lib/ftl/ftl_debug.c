@@ -80,6 +80,7 @@ ftl_band_validate_md(struct ftl_band *band)
 		}
 
 		if (addr_l2p.offset != addr_md.offset) {
+			SPDK_ERRLOG("Bad address %lu %lu\n", addr_l2p.offset, addr_md.offset);
 			valid = false;
 			break;
 		}

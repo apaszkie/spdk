@@ -1630,7 +1630,7 @@ ftl_update_stats(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry)
 	dev->stats.write_total++;
 }
 
-static void
+bool
 ftl_update_l2p(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry,
 	       struct ftl_addr addr)
 {
@@ -1643,7 +1643,7 @@ ftl_update_l2p(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry,
 	prev_addr = ftl_l2p_get(dev, entry->lba);
 	if (ftl_addr_invalid(prev_addr)) {
 		ftl_l2p_set(dev, entry->lba, addr);
-		return;
+		return true;
 	}
 
 	if (ftl_addr_cached(prev_addr)) {
@@ -1675,9 +1675,12 @@ ftl_update_l2p(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry,
 		      /* Check if relocating address it the same as in previous entry */
 		      ftl_addr_cmp(prev->addr, entry->addr))) {
 			pthread_spin_unlock(&prev->lock);
-			return;
+			return false;
 		}
 
+		if (io_weak) {
+			assert(0);
+		}
 		/*
 		 * If previous entry is part of cache and was written into disk remove
 		 * and invalidate it
@@ -1688,8 +1691,9 @@ ftl_update_l2p(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry,
 		}
 
 		ftl_l2p_set(dev, entry->lba, addr);
+
 		pthread_spin_unlock(&prev->lock);
-		return;
+		return true;
 	}
 
 evicted:
@@ -1698,7 +1702,7 @@ evicted:
 	 *  do anything (someone's already overwritten our data).
 	 */
 	if (io_weak && !ftl_addr_cmp(prev_addr, entry->addr)) {
-		return;
+		return false;
 	}
 
 	/* Lock the band containing previous physical address. This assures atomic changes to */
@@ -1716,6 +1720,12 @@ evicted:
 	}
 
 	pthread_spin_unlock(&band->lba_map.lock);
+
+	if (io_weak && !valid) {
+		return false;
+	}
+
+	return true;
 }
 
 static struct ftl_io *
@@ -1778,7 +1788,7 @@ ftl_submit_child_write(struct ftl_wptr *wptr, struct ftl_io *io)
 	struct ftl_addr		addr;
 	int			rc;
 
-	ioch = ftl_io_channel_get_ctx(io->ioch);
+	ioch = ftl_io_channel_get_ctx(dev->ioch);
 
 	if (spdk_likely(!wptr->direct_mode)) {
 		addr = wptr->addr;
@@ -1793,6 +1803,7 @@ ftl_submit_child_write(struct ftl_wptr *wptr, struct ftl_io *io)
 	if (!child) {
 		return -EAGAIN;
 	}
+	child->band = wptr->band;
 
 	wptr->num_outstanding++;
 
@@ -1933,7 +1944,7 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 			ftl_flush_pad_batch(dev);
 		}
 
-		return 0;
+		goto reloc;
 	}
 
 	io = ftl_io_wbuf_init(dev, wptr->addr, wptr->band, batch, ftl_write_cb);
@@ -1962,6 +1973,24 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 		if (ftl_io_done(io)) {
 			ftl_io_free(io);
 		}
+	}
+
+reloc:
+	while (!TAILQ_EMPTY(&dev->reloc_queue)) {
+		if (!ftl_wptr_ready(wptr)) {
+			return 0;
+		}
+
+		io = TAILQ_FIRST(&dev->reloc_queue);
+		TAILQ_REMOVE(&dev->reloc_queue, io, ioch_entry);
+		if (ftl_submit_write(wptr, io)) {
+			/* TODO: we need some recovery here */
+			assert(0 && "Write submit failed");
+			if (ftl_io_done(io)) {
+				ftl_io_free(io);
+			}
+		}
+		dev->stats.write_total += dev->xfer_size;
 	}
 
 	return dev->xfer_size;
@@ -2174,6 +2203,11 @@ ftl_submit_write_leaf(struct ftl_io *io)
 {
 	int rc;
 
+	if (io->flags & FTL_IO_WEAK) {
+		TAILQ_INSERT_TAIL(&io->dev->reloc_queue, io, ioch_entry);
+		return 0;
+	}
+
 	rc = ftl_submit_write(ftl_wptr_from_band(io->band), io);
 	if (rc == -EAGAIN) {
 		/* EAGAIN means that the request was put on the pending queue */
@@ -2196,7 +2230,7 @@ ftl_io_write(struct ftl_io *io)
 	}
 
 	/* For normal IOs we just need to copy the data onto the write buffer */
-	if (!(io->flags & FTL_IO_MD)) {
+	if (!(io->flags & FTL_IO_MD) && !(io->flags & FTL_IO_WEAK)) {
 		ftl_io_call_foreach_child(io, ftl_wbuf_fill);
 	} else {
 		/* Metadata has its own buffer, so it doesn't have to be copied, so just */

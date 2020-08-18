@@ -157,7 +157,7 @@ ftl_band_free_lba_map(struct ftl_band *band)
 
 	/* Verify that band's metadata is consistent with l2p */
 	if (band->num_zones) {
-		assert(ftl_band_validate_md(band) == true);
+		ftl_band_validate_md(band);
 	}
 
 	spdk_mempool_put(dev->lba_pool, lba_map->dma_buf);
@@ -460,6 +460,21 @@ ftl_band_set_addr(struct ftl_band *band, uint64_t lba, struct ftl_addr addr)
 	spdk_bit_array_set(lba_map->vld, offset);
 
 	pthread_spin_unlock(&lba_map->lock);
+}
+
+void
+ftl_band_set_addr_unlocked(struct ftl_band *band, uint64_t lba, struct ftl_addr addr)
+{
+	struct ftl_lba_map *lba_map = &band->lba_map;
+	uint64_t offset;
+
+	assert(lba != FTL_LBA_INVALID);
+
+	offset = ftl_band_block_offset_from_addr(band, addr);
+
+	lba_map->num_vld++;
+	lba_map->map[offset] = lba;
+	spdk_bit_array_set(lba_map->vld, offset);
 }
 
 size_t

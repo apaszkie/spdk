@@ -249,6 +249,8 @@ struct spdk_ftl_dev {
 	TAILQ_HEAD(, ftl_batch)			pending_batches;
 	TAILQ_HEAD(, ftl_batch)			free_batches;
 
+	TAILQ_HEAD(, ftl_io)			reloc_queue;
+
 	/* Devices' list */
 	STAILQ_ENTRY(spdk_ftl_dev)		stailq;
 };
@@ -305,6 +307,9 @@ void	ftl_get_media_events(struct spdk_ftl_dev *dev);
 int	ftl_io_channel_poll(void *arg);
 void	ftl_evict_cache_entry(struct spdk_ftl_dev *dev, struct ftl_wbuf_entry *entry);
 struct spdk_io_channel *ftl_get_io_channel(const struct spdk_ftl_dev *dev);
+bool ftl_update_l2p(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry,
+	       struct ftl_addr addr);
+
 
 #define ftl_to_addr(address) \
 	(struct ftl_addr) { .offset = (uint64_t)(address) }

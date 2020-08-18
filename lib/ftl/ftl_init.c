@@ -1649,6 +1649,7 @@ spdk_ftl_dev_init(const struct spdk_ftl_dev_init_opts *_opts, spdk_ftl_init_fn c
 	init_ctx->cb_fn = cb_fn;
 	init_ctx->cb_arg = cb_arg;
 	init_ctx->thread = spdk_get_thread();
+	TAILQ_INIT(&dev->reloc_queue);
 
 	if (!opts.conf) {
 		opts.conf = &g_default_conf;

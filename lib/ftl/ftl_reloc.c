@@ -98,6 +98,7 @@ struct ftl_reloc_move {
 #define FTL_MAX_RELOC_VECTOR_LBA 128
 	uint64_t				lba_vector[FTL_MAX_RELOC_VECTOR_LBA];
 
+	struct ftl_addr				dest_addr;
 	struct ftl_reloc_chunk			chunk_vector[FTL_MAX_RELOC_VECTOR_LBA];
 	size_t					num_chunks;
 };
@@ -269,6 +270,8 @@ ftl_reloc_write_cb(struct ftl_io *io, void *arg, int status)
 	struct ftl_band_reloc *breloc = move->breloc;
 	struct ftl_reloc *reloc = breloc->parent;
 
+	move->dest_addr = io->addr;
+
 	spdk_ring_enqueue(reloc->move_cmpl_queue, (void **)&move, 1, NULL);
 
 	if (status) {
@@ -437,7 +440,7 @@ ftl_reloc_next_blocks(struct ftl_band_reloc *breloc, struct ftl_addr *addr, size
 
 static struct ftl_io *
 ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move,
-		  ftl_io_fn fn, enum ftl_io_type io_type, int flags, struct ftl_addr _addr)
+		  ftl_io_fn fn, enum ftl_io_type io_type, int flags, struct ftl_addr _addr, size_t num_blocks)
 {
 	size_t block_off, i, j;
 	struct ftl_addr addr = _addr;
@@ -449,11 +452,11 @@ ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move,
 		.size		= sizeof(*io),
 		.flags		= flags | FTL_IO_INTERNAL | FTL_IO_PHYSICAL_MODE,
 		.type		= io_type,
-		.num_blocks	= move->num_blocks,
+		.num_blocks	= num_blocks,
 		.iovs		= {
 			{
 				.iov_base = move->data,
-				.iov_len = move->num_blocks * FTL_BLOCK_SIZE,
+				.iov_len = num_blocks * FTL_BLOCK_SIZE,
 			}
 		},
 		.iovcnt		= 1,
@@ -493,6 +496,10 @@ ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move,
 			io->lba.vector[lba_idx] = breloc->band->lba_map.map[block_off];
 			lba_idx++;
 		}
+	}
+
+	for (i = move->num_blocks; i < num_blocks; ++i) {
+		io->lba.vector[i] = FTL_LBA_INVALID;
 	}
 
 	return io;
@@ -545,7 +552,7 @@ ftl_reloc_write(struct ftl_reloc_move *move)
 	int io_flags =  FTL_IO_WEAK | FTL_IO_VECTOR_LBA | FTL_IO_BYPASS_CACHE;
 
 	move->io = ftl_reloc_io_init(breloc, move, ftl_reloc_write_cb,
-				     FTL_IO_WRITE, io_flags, move->chunk_vector[0].addr);
+				     FTL_IO_WRITE, io_flags, move->chunk_vector[0].addr, breloc->parent->xfer_size);
 
 	/* Try again later if IO allocation fails */
 	if (!move->io) {
@@ -564,7 +571,7 @@ ftl_reloc_read(struct ftl_reloc_move *move)
 	size_t num_blocks = 0, chunk_off;
 	void *data = move->data;
 
-	move->io = ftl_reloc_io_init(breloc, move, ftl_reloc_read_cb, FTL_IO_READ, 0, move->chunk_vector[0].addr);
+	move->io = ftl_reloc_io_init(breloc, move, ftl_reloc_read_cb, FTL_IO_READ, 0, move->chunk_vector[0].addr, move->num_blocks);
 	if (!move->io) {
 		return -ENOMEM;
 	}
@@ -676,7 +683,7 @@ ftl_reloc_release(struct ftl_band_reloc *breloc)
 		}
 	} else {
 		if (breloc->defrag)
-			SPDK_ERRLOG("This should never happen in this scenario\n");
+			SPDK_ERRLOG("This should never happen in this scenario valid: %lu\n", band->lba_map.num_vld);
 	}
 }
 
@@ -730,8 +737,11 @@ ftl_reloc_process_move_completions(struct ftl_reloc *reloc)
 	struct ftl_reloc_move *moves[FTL_RELOC_MAX_MOVES] = {0};
 	struct ftl_reloc_move *move;
 	struct ftl_band_reloc *breloc;
+	struct ftl_band *dest_band;
 	struct ftl_addr addr;
-	size_t i, j, num_outstanding, chunk_off;
+	size_t i, j, num_outstanding, chunk_off, pos;
+	struct ftl_wbuf_entry entry = { 0 };
+	struct spdk_ftl_dev *dev = reloc->dev;
 
 	if (spdk_ring_count(reloc->move_cmpl_queue) == 0) {
 		return;
@@ -742,13 +752,33 @@ ftl_reloc_process_move_completions(struct ftl_reloc *reloc)
 	for (i = 0; i < num_outstanding; ++i) {
 		move = moves[i];
 		breloc = move->breloc;
+		pos = 0;
 		for (chunk_off = 0; chunk_off < move->num_chunks; ++chunk_off) {
 			addr = move->chunk_vector[chunk_off].addr;
 			for (j = 0; j < move->chunk_vector[chunk_off].num_blocks; ++j) {
 				size_t block_off;
 				block_off = ftl_band_block_offset_from_addr(breloc->band, addr);
-				addr.offset++;
 				ftl_reloc_clr_block(breloc, block_off);
+				entry.addr = addr;
+				entry.lba = move->lba_vector[pos];
+				entry.io_flags = FTL_IO_WEAK;
+
+				if (entry.lba != FTL_LBA_INVALID) {
+					dest_band = ftl_band_from_addr(dev, move->dest_addr);
+					assert(dest_band != breloc->band);
+
+					pthread_spin_lock(&dest_band->lba_map.lock);
+
+					if (ftl_update_l2p(reloc->dev, &entry, move->dest_addr)) {
+						ftl_band_set_addr_unlocked(dest_band, entry.lba, move->dest_addr);
+					}
+
+					pthread_spin_unlock(&dest_band->lba_map.lock);
+				}
+
+				move->dest_addr.offset++;
+				addr.offset++;
+				pos++;
 			}
 		}
 
