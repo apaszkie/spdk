@@ -157,7 +157,7 @@ ftl_band_free_lba_map(struct ftl_band *band)
 
 	/* Verify that band's metadata is consistent with l2p */
 	if (band->num_zones) {
-		ftl_band_validate_md(band);
+		assert(ftl_band_validate_md(band) == true);
 	}
 
 	spdk_mempool_put(dev->lba_pool, lba_map->dma_buf);
