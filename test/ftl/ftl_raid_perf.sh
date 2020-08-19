@@ -6,26 +6,20 @@ source $rootdir/test/common/autotest_common.sh
 source $testdir/common.sh
 
 tests=(\
-'-w write -q 32 -o 131072 -t 7200' \
-'-w randwrite -q 32 -o 4096 -t 1800' \
-'-w randwrite -q 32 -o 4096 -t 1800' \
-'-w randwrite -q 32 -o 4096 -t 1800' \
-'-w randwrite -q 32 -o 4096 -t 1800' \
-'-w randwrite -q 32 -o 4096 -t 300' \
-'-w randwrite -q 32 -o 4096 -t 300' \
-'-w randwrite -q 32 -o 4096 -t 300' \
+'-w write -q 32 -o 131072 -t 120' \
+'-w randwrite -q 32 -o 4096 -t 120' \
+'-w randwrite -q 32 -o 4096 -t 120' \
+'-w randwrite -q 32 -o 4096 -t 120' \
+'-w randwrite -q 32 -o 4096 -t 120' \
 )
 
 devices=(\
 '0000:5e:00.0' \
-'0000:8a:00.0' \
-'0000:8b:00.0' \
+'0000:5f:00.0' \
 '0000:b1:00.0' \
-'0000:b8:00.0' \
-'0000:bb:00.0' \
-'0000:bd:00.0' \
-'0000:d8:00.0' \
-'0000:d9:00.0' \
+'0000:b4:00.0' \
+'0000:b7:00.0' \
+'0000:ba:00.0' \
 )
 
 num_disks=$1
@@ -62,16 +56,16 @@ killprocess $bdevperf_pid
 
 for (( i=0; i<${#tests[@]}; i++ )) do
 	timing_enter "${tests[$i]}"
-	$rootdir/scripts/setup.sh reset
+	#$rootdir/scripts/setup.sh reset
 
-	for (( j=0; j<$num_disks; j++ )) do
-		nvme=$(ls -l /sys/block/nvme* | awk -v bdf=${devices[$j]} '$0 ~ bdf {print $11}' | xargs -d/ -i  echo {} | tail -2 | head -1)
-		nvme=/dev/$nvme
-		host_writes=$(nvme intel smart-log-add $nvme | awk '/host_bytes_written/ {print $5}')
-		nand_writes=$(nvme intel smart-log-add $nvme | awk '/nand_bytes_written/ {print $5}')
-		echo $nvme,$host_writes,$nand_writes >> "$RESULTS_DIR"log.csv
-	done
-	HUGEMEM=8192 $rootdir/scripts/setup.sh
+	#for (( j=0; j<$num_disks; j++ )) do
+	#	nvme=$(ls -l /sys/block/nvme* | awk -v bdf=${devices[$j]} '$0 ~ bdf {print $11}' | xargs -d/ -i  echo {} | tail -2 | head -1)
+	#	nvme=/dev/$nvme
+	#	host_writes=$(nvme intel smart-log-add $nvme | awk '/host_bytes_written/ {print $5}')
+	#	nand_writes=$(nvme intel smart-log-add $nvme | awk '/nand_bytes_written/ {print $5}')
+	#	echo $nvme,$host_writes,$nand_writes >> "$RESULTS_DIR"log.csv
+	#done
+	#HUGEMEM=8192 $rootdir/scripts/setup.sh
 
 	test="${tests[$i]}"
 	test=${test//-/}
