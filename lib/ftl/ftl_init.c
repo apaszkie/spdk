@@ -552,7 +552,6 @@ ftl_dev_init_core_thread(struct spdk_ftl_dev *dev)
 		return -1;
 	}
 
-	spdk_thread_send_msg(dev->core_thread, _ftl_dev_init_core_thread, dev);
 	return 0;
 }
 
@@ -1013,6 +1012,8 @@ ftl_dev_init_state(struct ftl_dev_init_ctx *init_ctx)
 		ftl_init_fail(init_ctx);
 		return;
 	}
+
+	spdk_thread_send_msg(dev->core_thread, _ftl_dev_init_core_thread, dev);
 
 	if (init_ctx->opts.mode & SPDK_FTL_MODE_CREATE) {
 		if (ftl_setup_initial_state(init_ctx)) {
