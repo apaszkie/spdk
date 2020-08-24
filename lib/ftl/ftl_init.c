@@ -107,11 +107,11 @@ static const struct spdk_ftl_conf	g_default_conf = {
 	/* 15% spare blocks */
 	.lba_rsvd = 20,
 	/* 6M write buffer per each IO channel */
-	.write_buffer_size = 3 * 1024 * 1024,
+	.write_buffer_size = 6 * 1024 * 1024,
 	/* 90% band fill threshold */
 	.band_thld = 90,
 	/* Max 256 IO depth per band relocate */
-	.max_reloc_qdepth = 128,
+	.max_reloc_qdepth = 64,
 	/* Max 3 active band relocates */
 	.max_active_relocs = 3,
 	/* IO pool size per user thread (this should be adjusted to thread IO qdepth) */
@@ -1867,6 +1867,8 @@ ftl_add_halt_poller(void *ctx)
 {
 	struct ftl_dev_init_ctx *fini_ctx = ctx;
 	struct spdk_ftl_dev *dev = fini_ctx->dev;
+
+	dev->reloc_halt_started = true;
 
 	_ftl_halt_defrag(dev);
 

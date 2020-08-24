@@ -9,17 +9,12 @@ random_distribution=normal
 norandommap
 buffered=0
 group_reporting
-verify=crc32c
-do_verify=1
-verify_dump=0
-verify_state_save=0
-verify_fatal=1
 serialize_overlap=1
 
 [rand]
 stonewall
-numjobs=1
-io_size=10G
+numjobs=2
+io_size=20G
 rw=randwrite
 bs=4k
 iodepth=128

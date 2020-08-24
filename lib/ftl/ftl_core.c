@@ -1882,7 +1882,7 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 	}
 
 	// Do not proceed user wirtes when only one band left
-	if (dev->num_free == 1 && !dev->halt) {
+	if (dev->num_free <= 1 && !dev->halt) {
 		dev->stats.one_band++;
 		goto reloc;
 	}
@@ -1896,7 +1896,10 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 		}
 
 		dev->stats.user_idle++;
-		goto reloc;
+		if (dev->reloc_halt_started) {
+			goto reloc;
+		}
+		return 0;
 	}
 
 	io = ftl_io_wbuf_init(dev, wptr->addr, wptr->band, batch, ftl_write_cb);
@@ -1928,6 +1931,7 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 		}
 	}
 
+	return 0;
 reloc:
 	//while (!TAILQ_EMPTY(&dev->reloc_queue)) {
 	if (!ftl_wptr_ready(wptr)) {
