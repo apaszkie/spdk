@@ -6,11 +6,10 @@ source $rootdir/test/common/autotest_common.sh
 source $testdir/common.sh
 
 tests=(\
-'-w write -q 32 -o 131072 -t 120' \
-'-w randwrite -q 32 -o 4096 -t 120' \
-'-w randwrite -q 32 -o 4096 -t 120' \
-'-w randwrite -q 32 -o 4096 -t 120' \
-'-w randwrite -q 32 -o 4096 -t 120' \
+'-w write -q 32 -o 131072 -t 30' \
+'-w randwrite -q 32 -o 4096 -t 30' \
+'-w randwrite -q 32 -o 4096 -t 30' \
+'-w randwrite -q 32 -o 4096 -t 30' \
 )
 
 devices=(\
