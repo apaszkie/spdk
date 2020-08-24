@@ -201,7 +201,7 @@ _ftl_band_set_free(struct ftl_band *band)
 	}
 #endif
 	dev->num_free++;
-	//ftl_apply_limits(dev);
+	ftl_apply_limits(dev);
 }
 
 static void
@@ -217,7 +217,7 @@ _ftl_band_set_preparing(struct ftl_band *band)
 	assert(dev->num_free > 0);
 	dev->num_free--;
 
-	//ftl_apply_limits(dev);
+	ftl_apply_limits(dev);
 }
 
 static void

@@ -1851,6 +1851,30 @@ ftl_check_io_channel_flush(struct spdk_ftl_dev *dev)
 	return false;
 }
 
+void
+ftl_apply_limits(struct spdk_ftl_dev *dev)
+{
+	const struct spdk_ftl_limit *limit;
+	struct ftl_io_channel *ioch;
+	struct ftl_stats *stats = &dev->stats;
+	int i;
+
+	/*  Clear existing limit */
+	dev->limit = SPDK_FTL_LIMIT_MAX;
+
+	for (i = SPDK_FTL_LIMIT_CRIT; i < SPDK_FTL_LIMIT_MAX; ++i) {
+		limit = ftl_get_limit(dev, i);
+
+		if (dev->num_free <= limit->thld) {
+			stats->limits[i]++;
+			dev->limit = i;
+			break;
+		}
+	}
+
+	ftl_trace_limits(dev, dev->limit, dev->num_free);
+}
+
 static int
 ftl_wptr_process_writes(struct ftl_wptr *wptr)
 {
@@ -1882,9 +1906,19 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 	}
 
 	// Do not proceed user wirtes when only one band left
-	if (dev->num_free <= 1 && !dev->halt) {
+	if (dev->limit == SPDK_FTL_LIMIT_CRIT && !dev->halt) {
 		dev->stats.one_band++;
 		goto reloc;
+	}
+
+
+	if (dev->limit < SPDK_FTL_LIMIT_MAX) {
+		const struct spdk_ftl_limit *current_limit = ftl_get_limit(dev, dev->limit);
+
+		double current_ratio = ((double)dev->user_outstanding / (double)(dev->reloc_outstanding + 1)) * 100;
+		if (current_ratio < current_limit->limit) {
+			goto reloc;
+		}
 	}
 
 	batch = ftl_get_next_batch(dev);

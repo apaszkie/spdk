@@ -13,8 +13,8 @@ serialize_overlap=1
 
 [rand]
 stonewall
-numjobs=2
-io_size=20G
+numjobs=1
+io_size=10G
 rw=randwrite
 bs=4k
 iodepth=128
