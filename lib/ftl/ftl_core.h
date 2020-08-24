@@ -79,6 +79,10 @@ struct ftl_stats {
 
 	struct timespec				begin;
 	struct timespec				end;
+
+	size_t					reloc_idle;
+	size_t					user_idle;
+	uint64_t				one_band;
 };
 
 struct ftl_global_md {
@@ -250,6 +254,8 @@ struct spdk_ftl_dev {
 	TAILQ_HEAD(, ftl_batch)			free_batches;
 
 	TAILQ_HEAD(, ftl_io)			reloc_queue;
+	size_t					reloc_outstanding;
+	size_t					user_outstanding;
 
 	/* Devices' list */
 	STAILQ_ENTRY(spdk_ftl_dev)		stailq;

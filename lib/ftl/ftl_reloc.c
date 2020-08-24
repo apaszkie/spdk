@@ -271,7 +271,6 @@ ftl_reloc_write_cb(struct ftl_io *io, void *arg, int status)
 	struct ftl_reloc *reloc = breloc->parent;
 
 	move->dest_addr = io->addr;
-
 	spdk_ring_enqueue(reloc->move_cmpl_queue, (void **)&move, 1, NULL);
 
 	if (status) {
@@ -682,8 +681,9 @@ ftl_reloc_release(struct ftl_band_reloc *breloc)
 			reloc->num_defrag_bands--;
 		}
 	} else {
-		if (breloc->defrag)
+		if (breloc->defrag) {
 			SPDK_ERRLOG("This should never happen in this scenario valid: %lu\n", band->lba_map.num_vld);
+		}
 	}
 }
 
@@ -753,6 +753,11 @@ ftl_reloc_process_move_completions(struct ftl_reloc *reloc)
 		move = moves[i];
 		breloc = move->breloc;
 		pos = 0;
+
+		size_t num_blocks __attribute__((unused));
+		num_blocks = __atomic_fetch_sub(&breloc->band->num_reloc_blocks, dev->xfer_size, __ATOMIC_SEQ_CST);
+		assert(num_blocks > 0);
+
 		for (chunk_off = 0; chunk_off < move->num_chunks; ++chunk_off) {
 			addr = move->chunk_vector[chunk_off].addr;
 			for (j = 0; j < move->chunk_vector[chunk_off].num_blocks; ++j) {
@@ -782,6 +787,7 @@ ftl_reloc_process_move_completions(struct ftl_reloc *reloc)
 			}
 		}
 
+		dev->reloc_outstanding--;
 		breloc->num_outstanding--;
 		move->num_blocks = 0;
 		move->num_chunks = 0;

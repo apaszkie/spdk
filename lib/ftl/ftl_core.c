@@ -150,7 +150,6 @@ static struct ftl_wbuf_entry *
 ftl_acquire_wbuf_entry(struct ftl_io_channel *io_channel, int io_flags)
 {
 	struct ftl_wbuf_entry *entry = NULL;
-	uint32_t qdepth;
 
 	if (spdk_ring_dequeue(io_channel->free_queue, (void **)&entry, 1) != 1) {
 		return NULL;
@@ -432,6 +431,8 @@ ftl_md_write_cb(struct ftl_io *io, void *arg, int status)
 
 		ftl_remove_wptr(wptr);
 	}
+
+	dev->user_outstanding--;
 }
 
 static int
@@ -1519,7 +1520,6 @@ ftl_write_cb(struct ftl_io *io, void *arg, int status)
 	struct spdk_ftl_dev *dev = io->dev;
 	struct ftl_batch *batch = io->batch;
 	struct ftl_wbuf_entry *entry;
-	struct ftl_band *band;
 	struct ftl_addr prev_addr, addr = io->addr;
 
 	if (status) {
@@ -1531,16 +1531,9 @@ ftl_write_cb(struct ftl_io *io, void *arg, int status)
 	assert(!(io->flags & FTL_IO_MD));
 
 	TAILQ_FOREACH(entry, &batch->entries, tailq) {
-		band = entry->band;
 		if (!(entry->io_flags & FTL_IO_PAD)) {
 			/* Verify that the LBA is set for user blocks */
 			assert(entry->lba != FTL_LBA_INVALID);
-		}
-
-		if (band != NULL) {
-			size_t num_blocks __attribute__((unused));
-			num_blocks = __atomic_fetch_sub(&band->num_reloc_blocks, 1, __ATOMIC_SEQ_CST);
-			assert(num_blocks > 0);
 		}
 
 		entry->addr = addr;
@@ -1589,6 +1582,7 @@ ftl_update_l2p(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry,
 	int valid;
 	bool io_weak = entry->io_flags & FTL_IO_WEAK;
 
+again:
 	prev_addr = ftl_l2p_get(dev, entry->lba);
 	if (ftl_addr_invalid(prev_addr)) {
 		ftl_l2p_set(dev, entry->lba, addr);
@@ -1658,6 +1652,11 @@ evicted:
 	pthread_spin_lock(&band->lba_map.lock);
 
 	valid = ftl_invalidate_addr_unlocked(dev, prev_addr);
+
+	if (!io_weak && !valid) {
+		pthread_spin_unlock(&band->lba_map.lock);
+		goto again;
+	}
 
 	/* If the address has been invalidated already, we don't want to update */
 	/* the L2P for weak writes, as it means the write is no longer valid. */
@@ -1884,6 +1883,7 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 
 	// Do not proceed user wirtes when only one band left
 	if (dev->num_free == 1 && !dev->halt) {
+		dev->stats.one_band++;
 		goto reloc;
 	}
 
@@ -1895,6 +1895,7 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 			ftl_flush_pad_batch(dev);
 		}
 
+		dev->stats.user_idle++;
 		goto reloc;
 	}
 
@@ -1918,6 +1919,7 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 
 	SPDK_DEBUGLOG(SPDK_LOG_FTL_CORE, "Write addr:%lx\n", wptr->addr.offset);
 
+	dev->user_outstanding++;
 	if (ftl_submit_write(wptr, io)) {
 		/* TODO: we need some recovery here */
 		assert(0 && "Write submit failed");
@@ -1932,8 +1934,8 @@ reloc:
 		return 0;
 	}
 
-	io = TAILQ_FIRST(&dev->reloc_queue);
-	if (io) {
+	if (!TAILQ_EMPTY(&dev->reloc_queue)) {
+		io = TAILQ_FIRST(&dev->reloc_queue);
 		TAILQ_REMOVE(&dev->reloc_queue, io, ioch_entry);
 		if (ftl_submit_write(wptr, io)) {
 			/* TODO: we need some recovery here */
@@ -1943,6 +1945,16 @@ reloc:
 			}
 		}
 		dev->stats.write_total += dev->xfer_size;
+		dev->reloc_outstanding++;
+
+		__atomic_fetch_add(&io->band->num_reloc_blocks, dev->xfer_size, __ATOMIC_SEQ_CST);
+		if (!spdk_bit_array_get(wptr->band->reloc_bitmap, io->band->id)) {
+			spdk_bit_array_set(wptr->band->reloc_bitmap, io->band->id);
+			io->band->num_reloc_bands++;
+		}
+
+	} else {
+		dev->stats.reloc_idle++;
 	}
 	//}
 
@@ -1980,24 +1992,7 @@ ftl_process_writes(struct spdk_ftl_dev *dev)
 static void
 ftl_fill_wbuf_entry(struct ftl_wbuf_entry *entry, struct ftl_io *io)
 {
-	size_t i, j;
 	memcpy(entry->payload, ftl_io_iovec_addr(io), FTL_BLOCK_SIZE);
-
-	if (entry->io_flags & FTL_IO_WEAK) {
-		size_t pos = 0;
-		for (i = 0; i < io->num_chunks; i++) {
-			for (j = 0; j < io->chunk[i].num_blocks; j++) {
-				if (pos == io->pos) {
-					entry->band = io->band;
-					entry->addr.offset = io->chunk[i].addr.offset + j;
-					goto found;
-				}
-				pos++;
-			}
-		}
-found:
-		__atomic_fetch_add(&entry->band->num_reloc_blocks, 1, __ATOMIC_SEQ_CST);
-	}
 
 	entry->trace = io->trace;
 	entry->lba = ftl_io_current_lba(io);

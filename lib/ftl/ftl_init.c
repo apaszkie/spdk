@@ -111,11 +111,11 @@ static const struct spdk_ftl_conf	g_default_conf = {
 	/* 90% band fill threshold */
 	.band_thld = 90,
 	/* Max 256 IO depth per band relocate */
-	.max_reloc_qdepth = 32,
+	.max_reloc_qdepth = 128,
 	/* Max 3 active band relocates */
 	.max_active_relocs = 3,
 	/* IO pool size per user thread (this should be adjusted to thread IO qdepth) */
-	.user_io_pool_size = 2048,
+	.user_io_pool_size = 8192,
 	/*
 	 * If clear ftl will return error when restoring after a dirty shutdown
 	 * If set, last band will be padded, ftl will restore based only on closed bands - this
