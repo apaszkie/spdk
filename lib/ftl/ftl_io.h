@@ -152,6 +152,9 @@ struct ftl_wbuf_entry {
 	/* Trace ID of the requests the entry is part of */
 	uint64_t				trace;
 
+	/* Private data of the entry holder */
+	void					*priv_data;
+
 	/* Indicates that the entry was written out and is still present in the
 	 * L2P table.
 	 */

@@ -44,6 +44,9 @@
 static struct ftl_nv_cache_compaction *
 compaction_alloc(struct spdk_ftl_dev *dev);
 
+static void
+compaction_process_iter(struct ftl_nv_cache_compaction *compaction);
+
 static void _nv_cache_bdev_event_cb(enum spdk_bdev_event_type type,
 				    struct spdk_bdev *bdev, void *event_ctx)
 {
@@ -84,6 +87,13 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 	if (spdk_bdev_open_ext(bdev_name, true, _nv_cache_bdev_event_cb,
 			       dev, &nv_cache->bdev_desc)) {
 		SPDK_ERRLOG("Unable to open bdev: %s\n", bdev_name);
+		return -1;
+	}
+
+	nv_cache->bdev_ioch = spdk_bdev_get_io_channel(nv_cache->bdev_desc);
+	if (!nv_cache->bdev_ioch) {
+		SPDK_ERRLOG("Unable to get IO channel for bdev: %s\n",
+			    bdev_name);
 		return -1;
 	}
 
@@ -167,11 +177,11 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 
 	TAILQ_INIT(&nv_cache->chunk_free_list);
 	TAILQ_INIT(&nv_cache->chunk_full_list);
-	TAILQ_INIT(&nv_cache->chunk_compacted_list);
 
 	nv_cache->chunk_size = FTL_NV_CACHE_CHUNK_SIZE_BYTES / FTL_BLOCK_SIZE;
 	nv_cache->chunk_count = spdk_bdev_get_num_blocks(bdev) / nv_cache->chunk_size;
 	nv_cache->chunk = calloc(nv_cache->chunk_count, sizeof(nv_cache->chunk[0]));
+	nv_cache->chunk_free_count = nv_cache->chunk_count;
 	if (!nv_cache->chunk) {
 		SPDK_ERRLOG("Cannot allocate memory for chunks\n");
 		return -1;
@@ -179,7 +189,6 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 	for (i = 0; i < nv_cache->chunk_count; i++) {
 		struct ftl_nv_cache_chunk *chunk = &nv_cache->chunk[i];
 
-		chunk->id = i;
 		chunk->offset = i * nv_cache->chunk_size;
 		TAILQ_INSERT_TAIL(&nv_cache->chunk_free_list, chunk, entry);
 	}
@@ -195,8 +204,6 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 	return 0;
 }
 
-/* TODO Do we need deinit function? */
-
 static bool _is_compaction_required(struct ftl_nv_cache *nv_cache)
 {
 	return nv_cache->chunk_full_count >=
@@ -208,6 +215,8 @@ static bool is_chunk_compacted(struct ftl_nv_cache_chunk *chunk)
 	uint64_t blocks_to_compact = chunk->blocks_written -
 				     chunk->blocks_skipped;
 
+	assert(chunk->blocks_written != 0);
+
 	if (blocks_to_compact == chunk->blocks_compacted) {
 		return true;
 	}
@@ -218,6 +227,8 @@ static bool is_chunk_compacted(struct ftl_nv_cache_chunk *chunk)
 static bool is_chunk_to_read(struct ftl_nv_cache_chunk *chunk)
 {
 	uint64_t blocks_to_read = chunk->blocks_written - chunk->blocks_skipped;
+
+	assert(chunk->blocks_written != 0);
 
 	if (blocks_to_read == chunk->read_pointer) {
 		return false;
@@ -232,32 +243,50 @@ get_chunk_for_compaction(struct ftl_nv_cache_compaction *compaction)
 	struct ftl_nv_cache *nv_cache = compaction->nv_cache;
 	struct ftl_nv_cache_chunk *chunk = NULL;
 
-	pthread_spin_lock(&nv_cache->lock);
-
-	if (!TAILQ_EMPTY(&nv_cache->chunk_compacted_list)) {
-		chunk = TAILQ_FIRST(&nv_cache->chunk_compacted_list);
+	if (!TAILQ_EMPTY(&compaction->chunk_list)) {
+		chunk = TAILQ_FIRST(&compaction->chunk_list);
 		if (is_chunk_to_read(chunk)) {
-			chunk = NULL;
-		} else {
-			goto END;
+			return chunk;
 		}
 	}
 
+	pthread_spin_lock(&nv_cache->lock);
 	if (!TAILQ_EMPTY(&nv_cache->chunk_full_list)) {
 		chunk = TAILQ_FIRST(&nv_cache->chunk_full_list);
 		TAILQ_REMOVE(&nv_cache->chunk_full_list, chunk, entry);
-		TAILQ_INSERT_TAIL(&nv_cache->chunk_compacted_list,
-				  chunk, entry);
-
-		chunk->read_pointer = 0;
-		chunk->blocks_compacted = 0;
 	} else {
 		assert(0);
 	}
-
-END:
 	pthread_spin_unlock(&nv_cache->lock);
+
+	TAILQ_INSERT_HEAD(&compaction->chunk_list, chunk, entry);
+
 	return chunk;
+}
+
+static void
+chunk_compaction_advance(struct ftl_nv_cache_compaction *compaction,
+			 struct ftl_nv_cache_chunk *chunk)
+{
+	uint64_t offset = chunk->offset;
+	struct ftl_nv_cache *nv_cache = compaction->nv_cache;
+
+	chunk->blocks_compacted++;
+	if (!is_chunk_compacted(chunk)) {
+		return;
+	}
+
+	TAILQ_REMOVE(&compaction->chunk_list, chunk, entry);
+	/* Reset chunk */
+	offset = chunk->offset;
+	memset(chunk, 0, sizeof(*chunk));
+	chunk->offset = offset;
+
+	pthread_spin_lock(&nv_cache->lock);
+	TAILQ_INSERT_TAIL(&nv_cache->chunk_free_list, chunk, entry);
+	nv_cache->chunk_free_count++;
+	nv_cache->chunk_full_count--;
+	pthread_spin_unlock(&nv_cache->lock);
 }
 
 static uint64_t _chunk_get_free_space(
@@ -329,6 +358,7 @@ AGAIN:
 		if (!TAILQ_EMPTY(&nv_cache->chunk_free_list)) {
 			chunk = TAILQ_FIRST(&nv_cache->chunk_free_list);
 			TAILQ_REMOVE(&nv_cache->chunk_free_list, chunk, entry);
+			nv_cache->chunk_free_count--;
 			nv_cache->chunk_current = chunk;
 		} else {
 			goto END;
@@ -407,19 +437,110 @@ static void compaction_free(struct spdk_ftl_dev *dev,
 	free(compaction);
 }
 
-static void
-compaction_process_read_cb(struct spdk_bdev_io *bdev_io,
-			   bool success,
-			   void *cb_arg)
-{
-
-}
-
 static struct ftl_nv_cache_block_metadata *
 compaction_get_metadata(struct ftl_batch *batch, uint64_t md_size, uint64_t idx)
 {
 	off_t offset = md_size * idx;
 	return (struct ftl_nv_cache_block_metadata *)(batch->metadata + offset);
+}
+
+static void
+compaction_process_ftl_done(struct ftl_nv_cache_compaction *compaction)
+{
+	struct ftl_wbuf_entry *entry;
+	uint64_t num_entries = compaction->batch->num_entries;
+
+	entry = compaction->entries;
+	compaction->iter.idx = 0;
+	while (compaction->iter.idx < num_entries) {
+		struct ftl_nv_cache_chunk *chunk = entry->priv_data;
+		chunk_compaction_advance(compaction, chunk);
+
+		entry++;
+		compaction->iter.idx++;
+	}
+
+	compaction->iter.remaining = 0;
+	compaction->iter.idx = 0;
+	compaction->iter.entry = compaction->entries;
+
+	compaction->process = compaction_process_iter;
+}
+
+static void
+compaction_process_read_cb(struct spdk_bdev_io *bdev_io,
+			   bool success,
+			   void *cb_arg)
+{
+	struct spdk_ftl_dev *dev;
+	struct ftl_nv_cache_block_metadata *md;
+	struct ftl_nv_cache_compaction *compaction;
+	struct ftl_nv_cache_chunk *chunk;
+	struct ftl_wbuf_entry *entry = cb_arg;
+	uint32_t idx = entry->index;
+	struct ftl_addr current_addr;
+
+	spdk_bdev_free_io(bdev_io);
+
+	if (!success) {
+		/* TODO(mbarczak) Handle this */;
+		assert(0);
+	}
+
+	chunk = entry->priv_data;
+
+	compaction = SPDK_CONTAINEROF(entry, struct ftl_nv_cache_compaction,
+				      entries[idx]);
+
+	md = compaction_get_metadata(compaction->batch,
+				     compaction->metadata_size, idx);
+
+	dev = compaction->nv_cache->ftl_dev;
+	current_addr = ftl_l2p_get(dev, md->lba);
+
+	if (ftl_addr_cmp(current_addr, entry->addr)) {
+		/*
+		 * Address still the same, we may continue to compact it back to
+		 * FTL
+		 */
+		compaction->iter.remaining--;
+
+		if (!compaction->iter.remaining) {
+			/*
+			 * Batch already collected, compact it
+			 * TODO(mbarczak) Move it to FTL
+			 */
+			compaction_process_ftl_done(compaction);
+		}
+	} else {
+		int rc;
+		struct ftl_nv_cache *nv_cache = compaction->nv_cache;
+
+		/*
+		 * In the mean this LBA had been invalidated, just mark it as
+		 * compacted and take another one for compaction
+		 */
+		chunk_compaction_advance(compaction, chunk);
+
+		/* Get Next block to compact */
+		if (!is_chunk_to_read(chunk)) {
+			chunk = get_chunk_for_compaction(compaction);
+		}
+		entry->priv_data = chunk;
+		uint64_t read_ptr = chunk->read_pointer++;
+		entry->addr.cache_offset = chunk->offset + read_ptr;
+
+		/* Submit read */
+		rc = spdk_bdev_read_blocks_with_md(nv_cache->bdev_desc,
+						   nv_cache->bdev_ioch,
+						   entry->payload, md,
+						   entry->addr.cache_offset, 1,
+						   compaction_process_read_cb, entry);
+
+		if (rc) {
+			assert(0);
+		}
+	}
 }
 
 static void
@@ -430,13 +551,8 @@ compaction_process_read(struct ftl_nv_cache_compaction *compaction)
 	struct ftl_nv_cache *nv_cache = compaction->nv_cache;
 	uint64_t num_entries = compaction->batch->num_entries;
 
-	struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(nv_cache->bdev_desc);
-	uint64_t md_size = spdk_bdev_get_md_size(bdev);
-	void *md = compaction->batch;
-
-	struct spdk_io_channel *ioch = spdk_bdev_get_io_channel(
-					       nv_cache->bdev_desc);
-
+	uint64_t md_size = compaction->metadata_size;
+	void *md;
 
 	if (compaction->iter.idx == num_entries) {
 		compaction->iter.remaining = num_entries;
@@ -445,26 +561,33 @@ compaction_process_read(struct ftl_nv_cache_compaction *compaction)
 	}
 
 	entry = compaction->iter.entry;
+	md = compaction_get_metadata(compaction->batch, md_size,
+				     compaction->iter.idx);
+
 	while (compaction->iter.idx < num_entries) {
 		/* TODO We can send one sequential IO in some cases */
 		rc = spdk_bdev_read_blocks_with_md(nv_cache->bdev_desc,
-						   ioch,
+						   nv_cache->bdev_ioch,
 						   entry->payload, md,
 						   entry->addr.cache_offset, 1,
-						   compaction_process_read_cb, entry);
+						   compaction_process_read_cb,
+						   entry);
 
-		if (-ENOMEM == rc) {
-			/* Return and try again later */
-		} else if (rc != 0) {
-			/* TODO Handle this error */
-			assert(0);
+		if (spdk_likely(0 == rc)) {
+			compaction->iter.idx++;
+			entry++;
+			md += md_size;
+		} else {
+			if (-ENOMEM == rc) {
+				/* Return and try again later */
+				assert(0);
+			} else if (rc != 0) {
+				/* TODO Handle this error */
+				assert(0);
+			}
 		}
-
-
-		compaction->iter.idx++;
-		entry = compaction->iter.entry++;
-		md += md_size;
 	}
+	compaction->iter.entry = entry;
 
 	if (compaction->iter.idx == num_entries) {
 		/* All IOs send, we'll continue from callbacks */
@@ -485,20 +608,21 @@ compaction_process_iter(struct ftl_nv_cache_compaction *compaction)
 		assert(0);
 	}
 
+	entry = compaction->iter.entry;
 	while (compaction->iter.idx < num_entries) {
-		entry = compaction->iter.entry;
-
 		if (!is_chunk_to_read(chunk)) {
 			chunk = get_chunk_for_compaction(compaction);
 		}
+		entry->priv_data = chunk;
 
 		uint64_t read_ptr = chunk->read_pointer++;
 		entry->addr.cache_offset = chunk->offset + read_ptr;
 
 
 		compaction->iter.idx++;
-		entry = compaction->iter.entry++;
+		entry++;
 	}
+	compaction->iter.entry = entry;
 
 	if (compaction->iter.idx != num_entries) {
 		/* TODO Handle this error */
@@ -511,6 +635,8 @@ compaction_process_iter(struct ftl_nv_cache_compaction *compaction)
 static struct ftl_nv_cache_compaction *compaction_alloc(
 	struct spdk_ftl_dev *dev)
 {
+	struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(
+					 dev->nv_cache.bdev_desc);
 	struct ftl_batch *batch;
 	struct ftl_nv_cache_compaction *compaction;
 	struct ftl_wbuf_entry *entry;
@@ -542,7 +668,8 @@ static struct ftl_nv_cache_compaction *compaction_alloc(
 	entry = compaction->entries;
 	for (i = 0; i < batch->num_entries; ++i, ++entry) {
 		entry->payload = spdk_zmalloc(FTL_BLOCK_SIZE,
-					      FTL_BLOCK_SIZE, NULL, SPDK_ENV_LCORE_ID_ANY,
+					      FTL_BLOCK_SIZE, NULL,
+					      SPDK_ENV_LCORE_ID_ANY,
 					      SPDK_MALLOC_DMA);
 		if (!entry->payload) {
 			goto ERROR;
@@ -562,6 +689,7 @@ static struct ftl_nv_cache_compaction *compaction_alloc(
 	compaction->iter.entry = compaction->entries;
 	compaction->iter.idx = 0;
 	TAILQ_INIT(&compaction->chunk_list);
+	compaction->metadata_size = spdk_bdev_get_md_size(bdev);
 
 	return compaction;
 
@@ -583,5 +711,3 @@ void ftl_nv_cache_compact(struct spdk_ftl_dev *dev)
 			nv_cache->compaction_process);
 	}
 }
-
-

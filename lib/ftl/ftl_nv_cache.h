@@ -61,7 +61,6 @@ struct ftl_nv_cache_chunk {
 	uint64_t blocks_skipped;
 	uint64_t blocks_compacted;
 	TAILQ_ENTRY(ftl_nv_cache_chunk) entry;
-	uint64_t id;
 };
 
 struct ftl_nv_cache_compaction {
@@ -74,6 +73,7 @@ struct ftl_nv_cache_compaction {
 		struct ftl_wbuf_entry *entry;
 	} iter;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_list;
+	uint64_t metadata_size;
 	struct ftl_wbuf_entry entries[];
 };
 
@@ -82,6 +82,8 @@ struct ftl_nv_cache {
 	struct spdk_ftl_dev *ftl_dev;
 	/* Write buffer cache bdev */
 	struct spdk_bdev_desc   *bdev_desc;
+	/* Write buffer cache IO channel */
+	struct spdk_io_channel  *bdev_ioch;
 	/* Write pointer */
 	uint64_t                current_addr;
 	/* Number of available blocks left */
@@ -111,7 +113,6 @@ struct ftl_nv_cache {
 	struct ftl_nv_cache_chunk *chunk_current;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_free_list;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_full_list;
-	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_compacted_list;
 	struct ftl_nv_cache_compaction *compaction_process;
 
 	/* Cache lock */
