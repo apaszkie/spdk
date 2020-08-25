@@ -80,6 +80,7 @@ ftl_band_validate_md(struct ftl_band *band)
 		}
 
 		if (addr_l2p.offset != addr_md.offset) {
+			SPDK_ERRLOG("Bad address %lu %lu\n", addr_l2p.offset, addr_md.offset);
 			valid = false;
 			break;
 		}
@@ -158,6 +159,12 @@ ftl_dev_dump_stats(const struct spdk_ftl_dev *dev)
 	printf("num LBAs:            %zu\n", dev->num_lbas);
 	printf("total valid LBAs:    %zu\n", total);
 	printf("free bands:          %zu\n", dev->num_free);
+	printf("reloc idle:          %zu\n", dev->stats.user_idle);
+	printf("user idle:           %zu\n", dev->stats.reloc_idle);
+	printf("one band:            %zu\n", dev->stats.one_band);
+	printf("reloc idle / one:    %.4lf\n", (double)dev->stats.reloc_idle / (double)dev->stats.one_band);
+	printf("user / reloc:        %.4lf\n",
+	       (double)dev->stats.user_idle / (double)dev->stats.reloc_idle);
 	printf("disk usage:          %.4lf\n", (double)total / (double)dev->num_lbas);
 	printf("total writes:        %"PRIu64"\n", dev->stats.write_total);
 	printf("user writes:         %"PRIu64"\n", dev->stats.write_user);

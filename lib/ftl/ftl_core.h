@@ -77,6 +77,13 @@ struct ftl_stats {
 
 	/* Number of limits applied */
 	uint64_t				limits[SPDK_FTL_LIMIT_MAX];
+
+	struct timespec				begin;
+	struct timespec				end;
+
+	size_t					reloc_idle;
+	size_t					user_idle;
+	uint64_t				one_band;
 };
 
 struct ftl_global_md {
@@ -112,6 +119,7 @@ struct spdk_ftl_dev {
 	int					halt;
 	/* Indicates the device is about to start stopping - use to handle multiple stop request */
 	bool					halt_started;
+	bool					reloc_halt_started;
 
 	/* Underlying device */
 	struct spdk_bdev_desc			*base_bdev_desc;
@@ -220,6 +228,10 @@ struct spdk_ftl_dev {
 	 */
 	TAILQ_HEAD(, ftl_batch)			pending_batches;
 	TAILQ_HEAD(, ftl_batch)			free_batches;
+
+	TAILQ_HEAD(, ftl_io)			reloc_queue;
+	size_t					reloc_outstanding;
+	size_t					user_outstanding;
 
 	/* Devices' list */
 	STAILQ_ENTRY(spdk_ftl_dev)		stailq;
@@ -516,6 +528,7 @@ ftl_is_append_supported(const struct spdk_ftl_dev *dev)
 
 void
 ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
-	       struct ftl_addr new_addr, struct ftl_addr weak_addr, bool io_weak);
+	       struct ftl_addr new_addr, struct ftl_addr weak_addr,
+	       bool io_weak);
 
 #endif /* FTL_CORE_H */

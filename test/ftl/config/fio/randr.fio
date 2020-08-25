@@ -2,6 +2,7 @@
 ioengine=spdk_bdev
 spdk_json_conf=${FTL_JSON_CONF}
 filename=${FTL_BDEV_NAME}
+spdk_core_mask=7
 direct=1
 thread=1
 buffered=0

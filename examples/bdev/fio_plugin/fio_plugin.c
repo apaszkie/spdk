@@ -42,6 +42,7 @@
 #include "spdk/string.h"
 #include "spdk/queue.h"
 #include "spdk/util.h"
+#include "spdk/likely.h"
 
 #include "spdk_internal/thread.h"
 #include "spdk_internal/event.h"
@@ -60,6 +61,7 @@ struct spdk_fio_options {
 	void *pad;
 	char *conf;
 	char *json_conf;
+	char *core_mask;
 	unsigned mem_mb;
 	bool mem_single_seg;
 };
@@ -89,6 +91,23 @@ struct spdk_fio_thread {
 	unsigned int		iocq_size;	/* number of iocq entries allocated */
 };
 
+struct fio_plugin_reactor {
+	pthread_t                               pthread;
+	cpu_set_t				cpuset;
+	TAILQ_HEAD(, fio_plugin_thread)         threads;
+	uint32_t                                thread_count;
+	struct spdk_ring			*msg_queue;
+};
+
+struct fio_plugin_thread {
+	TAILQ_ENTRY(fio_plugin_thread)          link;
+	struct fio_plugin_reactor               *reactor;
+};
+
+static struct fio_plugin_reactor g_reactors[1024];
+static bool g_pthread_create = true;
+static pthread_mutex_t g_thread_lock;
+
 static bool g_spdk_env_initialized = false;
 static const char *g_json_config_file = NULL;
 
@@ -113,12 +132,16 @@ spdk_fio_init_thread(struct thread_data *td)
 	fio_thread->td = td;
 	td->io_ops_data = fio_thread;
 
+	pthread_mutex_lock(&g_thread_lock);
+	g_pthread_create = false;
 	fio_thread->thread = spdk_thread_create("fio_thread", NULL);
 	if (!fio_thread->thread) {
 		free(fio_thread);
 		SPDK_ERRLOG("failed to allocate thread\n");
 		return -1;
 	}
+	g_pthread_create = true;
+	pthread_mutex_unlock(&g_thread_lock);
 	spdk_set_thread(fio_thread->thread);
 
 	fio_thread->iocq_size = td->o.iodepth;
@@ -227,6 +250,132 @@ spdk_fio_bdev_fini_start(void *arg)
 	spdk_subsystem_fini(spdk_fio_bdev_fini_done, done);
 }
 
+struct fio_reactor_msg {
+	void *ctx;
+	spdk_msg_fn fn;
+};
+
+static void *
+spdk_fio_reactor(void *arg)
+{
+	struct fio_plugin_thread *tmp, *fio_thread = arg;
+	struct fio_plugin_reactor *reactor = fio_thread->reactor;
+	struct spdk_thread *thread;
+	struct fio_reactor_msg *msg;
+
+	sched_setaffinity(0, sizeof(reactor->cpuset), &reactor->cpuset);
+	SPDK_NOTICELOG("Starting new pthread on core %td\n", reactor - g_reactors);
+
+	while (!TAILQ_EMPTY(&reactor->threads)) {
+		TAILQ_FOREACH_SAFE(fio_thread, &reactor->threads, link, tmp) {
+			thread = spdk_thread_get_from_ctx(fio_thread);
+			spdk_thread_poll(thread, 0, 0);
+
+			if (spdk_unlikely(spdk_thread_is_exited(thread))) {
+
+				/* Protect against simulationous create/delete */
+				pthread_mutex_lock(&g_thread_lock);
+				TAILQ_REMOVE(&reactor->threads, fio_thread, link);
+				assert(reactor->thread_count > 0);
+				reactor->thread_count--;
+				pthread_mutex_unlock(&g_thread_lock);
+				spdk_thread_destroy(thread);
+				continue;
+			}
+
+		}
+
+		if (spdk_ring_dequeue(reactor->msg_queue, (void **)&msg, 1)) {
+			msg->fn(msg->ctx);
+			free(msg);
+		}
+	}
+
+	pthread_exit(NULL);
+	return NULL;
+}
+
+static void
+spdk_fio_reactor_add_thread(void *ctx)
+{
+	struct fio_plugin_thread *fio_thread = ctx;
+	struct fio_plugin_reactor *reactor = fio_thread->reactor;
+
+	TAILQ_INSERT_TAIL(&reactor->threads, fio_thread, link);
+	reactor->thread_count++;
+}
+
+static int
+spdk_fio_new_thread_fn(struct spdk_thread *thread)
+{
+	struct fio_plugin_thread *fio_thread = spdk_thread_get_ctx(thread);
+	struct spdk_cpuset *cpumask = spdk_thread_get_cpumask(thread);
+	struct fio_plugin_reactor *reactor = NULL;
+	struct fio_reactor_msg *msg;
+	uint32_t i;
+	int rc = 0;
+
+	pthread_mutex_lock(&g_thread_lock);
+	if (g_pthread_create) {
+		SPDK_ENV_FOREACH_CORE(i) {
+			if (spdk_cpuset_get_cpu(cpumask, i)) {
+				if (reactor == NULL) {
+					reactor = &g_reactors[i];
+				}
+
+				/* Set cpu mask only for first thread */
+				if (reactor->thread_count > 0) {
+					break;
+				}
+
+				CPU_SET(i, &reactor->cpuset);
+			}
+		}
+
+		if (reactor == NULL) {
+			rc = -1;
+			goto exit;
+		}
+
+		fio_thread->reactor = reactor;
+
+		if (reactor->thread_count == 0) {
+			reactor->msg_queue = spdk_ring_create(SPDK_RING_TYPE_SP_SC,
+							      1024, SPDK_ENV_SOCKET_ID_ANY);
+
+			if (reactor->msg_queue == NULL) {
+				rc = -1;
+				goto exit;
+			}
+
+			TAILQ_INIT(&reactor->threads);
+			TAILQ_INSERT_TAIL(&reactor->threads, fio_thread, link);
+			reactor->thread_count++;
+
+			rc = pthread_create(&reactor->pthread, NULL, &spdk_fio_reactor, fio_thread);
+			if (rc != 0) {
+				SPDK_ERRLOG("Unable to spawn thread.\n");
+			}
+		} else {
+			msg = calloc(1, sizeof(*msg));
+			if (msg == NULL) {
+				rc = -1;
+				goto exit;
+			}
+
+			msg->ctx = fio_thread;
+			msg->fn = spdk_fio_reactor_add_thread;
+
+			spdk_ring_enqueue(reactor->msg_queue, (void **)&msg, 1, NULL);
+		}
+	}
+
+exit:
+	pthread_mutex_unlock(&g_thread_lock);
+
+	return rc;
+}
+
 static void *
 spdk_init_thread_poll(void *arg)
 {
@@ -288,6 +437,10 @@ spdk_init_thread_poll(void *arg)
 	}
 	opts.hugepage_single_segments = eo->mem_single_seg;
 
+	if (eo->core_mask) {
+		opts.core_mask = eo->core_mask;
+	}
+
 	if (spdk_env_init(&opts) < 0) {
 		SPDK_ERRLOG("Unable to initialize SPDK env\n");
 		spdk_conf_free(config);
@@ -296,7 +449,7 @@ spdk_init_thread_poll(void *arg)
 	}
 	spdk_unaffinitize_thread();
 
-	spdk_thread_lib_init(NULL, 0);
+	spdk_thread_lib_init(spdk_fio_new_thread_fn, sizeof(struct fio_plugin_thread));
 
 	/* Create an SPDK thread temporarily */
 	rc = spdk_fio_init_thread(&td);
@@ -360,21 +513,37 @@ static int
 spdk_fio_init_env(struct thread_data *td)
 {
 	pthread_condattr_t attr;
+	pthread_mutexattr_t mattr;
 	int rc = -1;
+
+	if (pthread_mutexattr_init(&mattr)) {
+		SPDK_ERRLOG("pthread_mutexattr_init() failed\n");
+		return -1;
+	}
+
+	if (pthread_mutexattr_settype(&mattr, PTHREAD_MUTEX_RECURSIVE)) {
+		SPDK_ERRLOG("pthread_mutexattr_settype() failed\n");
+		goto exit_lock;
+	}
+
+	if (pthread_mutex_init(&g_thread_lock, &mattr)) {
+		SPDK_ERRLOG("pthread_mutex_init() failed\n");
+		goto exit_lock;
+	}
 
 	if (pthread_condattr_init(&attr)) {
 		SPDK_ERRLOG("Unable to initialize condition variable\n");
-		return -1;
+		goto exit_lock;
 	}
 
 	if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC)) {
 		SPDK_ERRLOG("Unable to initialize condition variable\n");
-		goto out;
+		goto exit_cond;
 	}
 
 	if (pthread_cond_init(&g_init_cond, &attr)) {
 		SPDK_ERRLOG("Unable to initialize condition variable\n");
-		goto out;
+		goto exit_cond;
 	}
 
 	/*
@@ -390,8 +559,10 @@ spdk_fio_init_env(struct thread_data *td)
 	pthread_mutex_lock(&g_init_mtx);
 	pthread_cond_wait(&g_init_cond, &g_init_mtx);
 	pthread_mutex_unlock(&g_init_mtx);
-out:
+exit_cond:
 	pthread_condattr_destroy(&attr);
+exit_lock:
+	pthread_mutexattr_destroy(&mattr);
 	return rc;
 }
 
@@ -778,6 +949,15 @@ static struct fio_option options[] = {
 		.group		= FIO_OPT_G_INVALID,
 	},
 	{
+		.name		= "spdk_core_mask",
+		.lname		= "SPDK core mask",
+		.type		= FIO_OPT_STR_STORE,
+		.off1		= offsetof(struct spdk_fio_options, core_mask),
+		.help		= "If set fio plugin will spawn additional threads",
+		.category	= FIO_OPT_C_ENGINE,
+		.group		= FIO_OPT_G_INVALID,
+	},
+	{
 		.name		= NULL,
 	},
 };
@@ -819,11 +999,23 @@ static void fio_init spdk_fio_register(void)
 static void
 spdk_fio_finish_env(void)
 {
+	uint32_t i;
+	struct fio_plugin_reactor *reactor;
+
 	pthread_mutex_lock(&g_init_mtx);
 	g_poll_loop = false;
 	pthread_cond_signal(&g_init_cond);
 	pthread_mutex_unlock(&g_init_mtx);
 	pthread_join(g_init_thread_id, NULL);
+
+	SPDK_ENV_FOREACH_CORE(i) {
+		reactor = &g_reactors[i];
+		if (reactor->pthread) {
+			pthread_join(reactor->pthread, NULL);
+			assert(reactor->thread_count == 0);
+			spdk_ring_free(reactor->msg_queue);
+		}
+	}
 
 	spdk_thread_lib_fini();
 }

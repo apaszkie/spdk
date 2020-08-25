@@ -151,16 +151,8 @@ static struct ftl_wbuf_entry *
 ftl_acquire_wbuf_entry(struct ftl_io_channel *io_channel, int io_flags)
 {
 	struct ftl_wbuf_entry *entry = NULL;
-	uint32_t qdepth;
-
-	qdepth = __atomic_fetch_add(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
-	if (qdepth >= io_channel->qdepth_limit) {
-		__atomic_fetch_sub(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
-		return NULL;
-	}
 
 	if (spdk_ring_dequeue(io_channel->free_queue, (void **)&entry, 1) != 1) {
-		__atomic_fetch_sub(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
 		return NULL;
 	}
 
@@ -181,8 +173,6 @@ static void
 ftl_release_wbuf_entry(struct ftl_wbuf_entry *entry)
 {
 	struct ftl_io_channel *io_channel = entry->ioch;
-
-	__atomic_fetch_sub(&io_channel->qdepth_current, 1, __ATOMIC_SEQ_CST);
 	spdk_ring_enqueue(io_channel->free_queue, (void **)&entry, 1, NULL);
 }
 
@@ -429,6 +419,8 @@ ftl_md_write_cb(struct ftl_io *io, void *arg, int status)
 
 		ftl_remove_wptr(wptr);
 	}
+
+	dev->user_outstanding--;
 }
 
 static int
@@ -1021,49 +1013,6 @@ ftl_shutdown_complete(struct spdk_ftl_dev *dev)
 	       TAILQ_EMPTY(&ioch->retry_queue);
 }
 
-void
-ftl_apply_limits(struct spdk_ftl_dev *dev)
-{
-	const struct spdk_ftl_limit *limit;
-	struct ftl_io_channel *ioch;
-	struct ftl_stats *stats = &dev->stats;
-	uint32_t qdepth_limit = 100, qdepth_reloc;
-	int i;
-
-	/* Clear existing limit */
-	dev->limit = SPDK_FTL_LIMIT_MAX;
-
-	for (i = SPDK_FTL_LIMIT_CRIT; i < SPDK_FTL_LIMIT_MAX; ++i) {
-		limit = ftl_get_limit(dev, i);
-
-		if (dev->num_free <= limit->thld) {
-			qdepth_limit = limit->limit;
-			stats->limits[i]++;
-			dev->limit = i;
-			break;
-		}
-	}
-
-	ftl_trace_limits(dev, dev->limit, dev->num_free);
-	TAILQ_FOREACH(ioch, &dev->ioch_queue, tailq) {
-		if (ioch->reloc) {
-			qdepth_reloc = qdepth_limit;
-			if (qdepth_reloc == 100) {
-				qdepth_reloc = ftl_get_limit(dev, SPDK_FTL_LIMIT_START)->limit;
-			}
-
-			qdepth_reloc = (100 - qdepth_reloc) * ioch->num_entries / 100;
-			if (qdepth_reloc < dev->xfer_size) {
-				qdepth_reloc = dev->xfer_size;
-			}
-			__atomic_store_n(&ioch->qdepth_limit, qdepth_reloc, __ATOMIC_SEQ_CST);
-		} else {
-			__atomic_store_n(&ioch->qdepth_limit, (qdepth_limit * ioch->num_entries) / 100,
-					 __ATOMIC_SEQ_CST);
-		}
-	}
-}
-
 static int
 ftl_invalidate_addr_unlocked(struct spdk_ftl_dev *dev, struct ftl_addr addr)
 {
@@ -1525,7 +1474,6 @@ ftl_write_cb(struct ftl_io *io, void *arg, int status)
 	struct spdk_ftl_dev *dev = io->dev;
 	struct ftl_batch *batch = io->batch;
 	struct ftl_wbuf_entry *entry;
-	struct ftl_band *band;
 	struct ftl_addr prev_addr, addr = io->addr;
 
 	if (status) {
@@ -1537,15 +1485,9 @@ ftl_write_cb(struct ftl_io *io, void *arg, int status)
 	assert(!(io->flags & FTL_IO_MD));
 
 	TAILQ_FOREACH(entry, &batch->entries, tailq) {
-		band = entry->band;
 		if (!(entry->io_flags & FTL_IO_PAD)) {
 			/* Verify that the LBA is set for user blocks */
 			assert(entry->lba != FTL_LBA_INVALID);
-		}
-
-		if (band != NULL) {
-			assert(__atomic_load_n(&band->num_reloc_blocks, __ATOMIC_SEQ_CST)  > 0);
-			__atomic_fetch_sub(&band->num_reloc_blocks, 1, __ATOMIC_SEQ_CST);
 		}
 
 		entry->addr = addr;
@@ -1588,6 +1530,7 @@ void
 ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
 	       struct ftl_addr new_addr, struct ftl_addr weak_addr, bool io_weak)
 {
+
 	struct ftl_addr prev_addr;
 
 	prev_addr = ftl_l2p_get(dev, lba);
@@ -1621,12 +1564,14 @@ ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
 
 	/* Validate address */
 	ftl_l2p_set(dev, lba, new_addr);
-	ftl_band_set_addr(ftl_band_from_addr(dev, new_addr), lba, new_addr);
 
+	ftl_band_set_addr(ftl_band_from_addr(dev, new_addr), lba, new_addr);
 	/* L2P not changed in the meantime we can update location */
 	if (!ftl_addr_cached(prev_addr)) {
 		ftl_invalidate_addr(dev, prev_addr);
 	}
+
+	return;
 }
 
 static struct ftl_io *
@@ -1689,7 +1634,7 @@ ftl_submit_child_write(struct ftl_wptr *wptr, struct ftl_io *io)
 	struct ftl_addr		addr;
 	int			rc;
 
-	ioch = ftl_io_channel_get_ctx(io->ioch);
+	ioch = ftl_io_channel_get_ctx(dev->ioch);
 
 	if (spdk_likely(!wptr->direct_mode)) {
 		addr = wptr->addr;
@@ -1704,6 +1649,7 @@ ftl_submit_child_write(struct ftl_wptr *wptr, struct ftl_io *io)
 	if (!child) {
 		return -EAGAIN;
 	}
+	child->band = wptr->band;
 
 	wptr->num_outstanding++;
 
@@ -1806,6 +1752,30 @@ ftl_check_io_channel_flush(struct spdk_ftl_dev *dev)
 	return false;
 }
 
+void
+ftl_apply_limits(struct spdk_ftl_dev *dev)
+{
+	const struct spdk_ftl_limit *limit;
+	struct ftl_io_channel *ioch;
+	struct ftl_stats *stats = &dev->stats;
+	int i;
+
+	/*  Clear existing limit */
+	dev->limit = SPDK_FTL_LIMIT_MAX;
+
+	for (i = SPDK_FTL_LIMIT_CRIT; i < SPDK_FTL_LIMIT_MAX; ++i) {
+		limit = ftl_get_limit(dev, i);
+
+		if (dev->num_free <= limit->thld) {
+			stats->limits[i]++;
+			dev->limit = i;
+			break;
+		}
+	}
+
+	ftl_trace_limits(dev, dev->limit, dev->num_free);
+}
+
 static int
 ftl_wptr_process_writes(struct ftl_wptr *wptr)
 {
@@ -1836,6 +1806,22 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 		ftl_wptr_pad_band(wptr);
 	}
 
+	// Do not proceed user wirtes when only one band left
+	if (dev->limit == SPDK_FTL_LIMIT_CRIT && !dev->halt) {
+		dev->stats.one_band++;
+		goto reloc;
+	}
+
+
+	if (dev->limit < SPDK_FTL_LIMIT_MAX) {
+		const struct spdk_ftl_limit *current_limit = ftl_get_limit(dev, dev->limit);
+
+		double current_ratio = ((double)dev->user_outstanding / (double)(dev->reloc_outstanding + 1)) * 100;
+		if (current_ratio < current_limit->limit) {
+			goto reloc;
+		}
+	}
+
 	batch = ftl_get_next_batch(dev);
 	if (!batch) {
 		/* If there are queued flush requests we need to pad the write buffer to */
@@ -1844,6 +1830,10 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 			ftl_flush_pad_batch(dev);
 		}
 
+		dev->stats.user_idle++;
+		if (dev->reloc_halt_started) {
+			goto reloc;
+		}
 		return 0;
 	}
 
@@ -1867,6 +1857,7 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 
 	SPDK_DEBUGLOG(SPDK_LOG_FTL_CORE, "Write addr:%lx\n", wptr->addr.offset);
 
+	dev->user_outstanding++;
 	if (ftl_submit_write(wptr, io)) {
 		/* TODO: we need some recovery here */
 		assert(0 && "Write submit failed");
@@ -1874,6 +1865,37 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 			ftl_io_free(io);
 		}
 	}
+
+	return 0;
+reloc:
+	//while (!TAILQ_EMPTY(&dev->reloc_queue)) {
+	if (!ftl_wptr_ready(wptr)) {
+		return 0;
+	}
+
+	if (!TAILQ_EMPTY(&dev->reloc_queue)) {
+		io = TAILQ_FIRST(&dev->reloc_queue);
+		TAILQ_REMOVE(&dev->reloc_queue, io, ioch_entry);
+		if (ftl_submit_write(wptr, io)) {
+			/* TODO: we need some recovery here */
+			assert(0 && "Write submit failed");
+			if (ftl_io_done(io)) {
+				ftl_io_free(io);
+			}
+		}
+		dev->stats.write_total += dev->xfer_size;
+		dev->reloc_outstanding++;
+
+		__atomic_fetch_add(&io->band->num_reloc_blocks, dev->xfer_size, __ATOMIC_SEQ_CST);
+		if (!spdk_bit_array_get(wptr->band->reloc_bitmap, io->band->id)) {
+			spdk_bit_array_set(wptr->band->reloc_bitmap, io->band->id);
+			io->band->num_reloc_bands++;
+		}
+
+	} else {
+		dev->stats.reloc_idle++;
+	}
+	//}
 
 	return dev->xfer_size;
 error:
@@ -1904,6 +1926,15 @@ ftl_process_writes(struct spdk_ftl_dev *dev)
 	}
 
 	return 0;
+}
+
+static void
+ftl_fill_wbuf_entry(struct ftl_wbuf_entry *entry, struct ftl_io *io)
+{
+	memcpy(entry->payload, ftl_io_iovec_addr(io), FTL_BLOCK_SIZE);
+
+	entry->trace = io->trace;
+	entry->lba = ftl_io_current_lba(io);
 }
 
 static bool
@@ -2016,6 +2047,11 @@ ftl_submit_write_leaf(struct ftl_io *io)
 {
 	int rc;
 
+	if (io->flags & FTL_IO_WEAK) {
+		TAILQ_INSERT_TAIL(&io->dev->reloc_queue, io, ioch_entry);
+		return 0;
+	}
+
 	rc = ftl_submit_write(ftl_wptr_from_band(io->band), io);
 	if (rc == -EAGAIN) {
 		/* EAGAIN means that the request was put on the pending queue */
@@ -2037,9 +2073,8 @@ void ftl_io_write(struct ftl_io *io)
 	}
 
 	/* For normal IOs we just need to copy the data onto the write buffer */
-
 	if (ftl_check_core_thread(dev)) {
-		if (!(io->flags & FTL_IO_MD)) {
+		if (!(io->flags & FTL_IO_MD) && !(io->flags & FTL_IO_WEAK)) {
 			ftl_io_call_foreach_child(io, ftl_write_nv_cache);
 		} else {
 			ftl_io_call_foreach_child(io, ftl_submit_write_leaf);
@@ -2316,7 +2351,7 @@ ftl_task_core(void *ctx)
 	ftl_process_relocs(dev);
 	ftl_nv_cache_compact(dev);
 
-	return SPDK_POLLER_BUSY;
+	return 0;
 }
 
 SPDK_LOG_REGISTER_COMPONENT("ftl_core", SPDK_LOG_FTL_CORE)

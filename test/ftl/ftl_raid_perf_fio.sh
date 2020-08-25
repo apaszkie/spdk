@@ -4,29 +4,33 @@ testdir=$(readlink -f $(dirname $0))
 rootdir=$(readlink -f $testdir/../..)
 source $rootdir/test/common/autotest_common.sh
 source $testdir/common.sh
-
-declare -A suite
-suite['basic']='randw-verify randw-verify-j2 randw-verify-depth128'
-suite['extended']='drive-prep randw-verify-qd128-ext randw randr randrw'
-
 rpc_py=$rootdir/scripts/rpc.py
 
 fio_kill() {
 	killprocess $svcpid
-	rm -f $FTL_JSON_CONF
 }
 
-device=$1
-tests=${suite[$2]}
-uuid=$3
+tests=('drive-prep war')
+
+devices=(\
+'0000:5e:00.0' \
+'0000:5f:00.0' \
+'0000:b1:00.0' \
+'0000:b4:00.0' \
+'0000:b7:00.0' \
+'0000:ba:00.0' \
+)
+
+num_disks=$1
+disk_size=$2
+zone_size=$3
+write_unit_size=$4
+core_mask=$5
+io_cores=$6
+RESULTS_DIR=$7
 
 if [[ $CONFIG_FIO_PLUGIN != y ]]; then
 	echo "FIO not available"
-	exit 1
-fi
-
-if [ -z "$tests" ]; then
-	echo "Invalid test suite '$2'"
 	exit 1
 fi
 
@@ -39,15 +43,16 @@ trap "fio_kill; exit 1" SIGINT SIGTERM EXIT
 svcpid=$!
 waitforlisten $svcpid
 
-$rpc_py bdev_nvme_attach_controller -b nvme0 -a $device -t pcie
-$rpc_py bdev_ocssd_create -c nvme0 -b nvme0n1
+nvme_ctrls=""
+for (( j=0; j<$num_disks; j++ )) do
+	$rpc_py bdev_nvme_attach_controller -b nvme${j} -a ${devices[$j]} -t pcie
+	splits=$($rpc_py bdev_split_create -s $disk_size nvme${j}n1 1)
+	nvme_ctrls+="${splits[0]} "
+done
 
-if [ -z "$uuid" ]; then
-	$rpc_py bdev_ftl_create -b ftl0 -d nvme0n1 --core_mask 7
-else
-	$rpc_py bdev_ftl_create -b ftl0 -d nvme0n1 -u $uuid --core_mask 7
-fi
-
+$rpc_py bdev_raid_create -z 16 -r 0 -b "$nvme_ctrls" -n raid
+$rpc_py bdev_zone_block_create -z $zone_size -o 1 -b zone0 -w $write_unit_size -n raid
+$rpc_py bdev_ftl_create -b ftl0 -d zone0 --core_mask $core_mask --overprovisioning 20
 waitforbdev ftl0
 
 (
@@ -57,6 +62,8 @@ waitforbdev ftl0
 ) > $FTL_JSON_CONF
 
 killprocess $svcpid
+
+
 trap - SIGINT SIGTERM EXIT
 
 for test in ${tests}; do
@@ -64,4 +71,5 @@ for test in ${tests}; do
 	fio_bdev $testdir/config/fio/$test.fio
 	timing_exit $test
 done
+
 

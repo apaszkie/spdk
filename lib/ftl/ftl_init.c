@@ -111,11 +111,11 @@ static const struct spdk_ftl_conf	g_default_conf = {
 	/* 90% band fill threshold */
 	.band_thld = 90,
 	/* Max 256 IO depth per band relocate */
-	.max_reloc_qdepth = 256,
+	.max_reloc_qdepth = 64,
 	/* Max 3 active band relocates */
 	.max_active_relocs = 3,
 	/* IO pool size per user thread (this should be adjusted to thread IO qdepth) */
-	.user_io_pool_size = 2048,
+	.user_io_pool_size = 8192,
 	/*
 	 * If clear ftl will return error when restoring after a dirty shutdown
 	 * If set, last band will be padded, ftl will restore based only on closed bands - this
@@ -423,7 +423,6 @@ ftl_dev_init_core_thread(struct spdk_ftl_dev *dev)
 {
 	uint32_t i;
 	struct spdk_cpuset cpumask = {}, tmp_cpumask = {};
-	char thread_name[32];
 
 	/*
 	 * If core mask is provided create core thread on first cpu that match with the mask,
@@ -437,9 +436,7 @@ ftl_dev_init_core_thread(struct spdk_ftl_dev *dev)
 		SPDK_ENV_FOREACH_CORE(i) {
 			if (spdk_cpuset_get_cpu(&cpumask, i)) {
 				spdk_cpuset_set_cpu(&tmp_cpumask, i, true);
-				snprintf(thread_name, sizeof(thread_name), "ftl_core_thread_%u", i);
-
-				dev->core_thread = spdk_thread_create(thread_name, &tmp_cpumask);
+				dev->core_thread = spdk_thread_create("ftl_core_thread", &tmp_cpumask);
 				break;
 			}
 		}
@@ -451,7 +448,6 @@ ftl_dev_init_core_thread(struct spdk_ftl_dev *dev)
 		return -1;
 	}
 
-	spdk_thread_send_msg(dev->core_thread, _ftl_dev_init_core_thread, dev);
 	return 0;
 }
 
@@ -912,6 +908,8 @@ ftl_dev_init_state(struct ftl_dev_init_ctx *init_ctx)
 		ftl_init_fail(init_ctx);
 		return;
 	}
+
+	spdk_thread_send_msg(dev->core_thread, _ftl_dev_init_core_thread, dev);
 
 	if (init_ctx->opts.mode & SPDK_FTL_MODE_CREATE) {
 		if (ftl_setup_initial_state(init_ctx)) {
@@ -1547,6 +1545,7 @@ spdk_ftl_dev_init(const struct spdk_ftl_dev_init_opts *_opts, spdk_ftl_init_fn c
 	init_ctx->cb_fn = cb_fn;
 	init_ctx->cb_arg = cb_arg;
 	init_ctx->thread = spdk_get_thread();
+	TAILQ_INIT(&dev->reloc_queue);
 
 	if (!opts.conf) {
 		opts.conf = &g_default_conf;
@@ -1660,18 +1659,6 @@ ftl_halt_complete_cb(void *ctx)
 }
 
 static void
-ftl_core_thread_exit(void *ctx)
-{
-	struct ftl_dev_init_ctx *fini_ctx = ctx;
-	struct spdk_ftl_dev *dev = fini_ctx->dev;
-
-	spdk_thread_exit(dev->core_thread);
-	spdk_thread_send_msg(fini_ctx->thread, ftl_halt_complete_cb, ctx);
-}
-
-static void ftl_io_channel_release_cb(void *ctx);
-
-static void
 ftl_io_channel_release_cb(void *ctx)
 {
 	struct ftl_dev_init_ctx *fini_ctx = ctx;
@@ -1684,10 +1671,10 @@ ftl_io_channel_release_cb(void *ctx)
 	}
 
 	if (dev->conf.core_mask) {
-		spdk_thread_send_msg(dev->core_thread, ftl_core_thread_exit, ctx);
-	} else {
-		ftl_halt_complete_cb(ctx);
+		spdk_thread_exit(dev->core_thread);
 	}
+
+	spdk_thread_send_msg(fini_ctx->thread, ftl_halt_complete_cb, ctx);
 }
 
 static void
@@ -1697,7 +1684,7 @@ ftl_put_io_channel_cb(void *ctx)
 	struct spdk_ftl_dev *dev = fini_ctx->dev;
 
 	spdk_put_io_channel(dev->ioch);
-	spdk_thread_send_msg(fini_ctx->thread, ftl_io_channel_release_cb, ctx);
+	ftl_io_channel_release_cb(ctx);
 }
 
 static void
@@ -1759,13 +1746,16 @@ ftl_halt_defrag_poller(void *ctx)
 	struct spdk_ftl_dev *dev = fini_ctx->dev;
 
 	if (!ftl_reloc_done(dev->reloc)) {
-		return 0;
+		return SPDK_POLLER_BUSY;
+	}
+
+	if (ftl_reloc_free_tasks(dev->reloc, ftl_reloc_free_tasks_cb, fini_ctx)) {
+		return SPDK_POLLER_BUSY;
 	}
 
 	spdk_poller_unregister(&fini_ctx->poller);
-	ftl_reloc_free_tasks(dev->reloc, ftl_reloc_free_tasks_cb, fini_ctx);
 
-	return 0;
+	return SPDK_POLLER_IDLE;
 }
 
 static void
@@ -1773,6 +1763,8 @@ ftl_add_halt_poller(void *ctx)
 {
 	struct ftl_dev_init_ctx *fini_ctx = ctx;
 	struct spdk_ftl_dev *dev = fini_ctx->dev;
+
+	dev->reloc_halt_started = true;
 
 	_ftl_halt_defrag(dev);
 
@@ -1808,6 +1800,12 @@ ftl_dev_free(struct spdk_ftl_dev *dev, spdk_ftl_init_fn cb_fn, void *cb_arg,
 int
 spdk_ftl_dev_free(struct spdk_ftl_dev *dev, spdk_ftl_init_fn cb_fn, void *cb_arg)
 {
+	clock_gettime(CLOCK_MONOTONIC_RAW, &dev->stats.end);
+	double test_time = (dev->stats.end.tv_nsec - dev->stats.begin.tv_nsec) / 1000000000.0 +
+			   (dev->stats.end.tv_sec  - dev->stats.begin.tv_sec);
+	SPDK_NOTICELOG("IO took %f seconds, user writes %lu,\n IOPS: %f\n",
+		       test_time, dev->stats.write_user, (double)dev->stats.write_user / test_time);
+
 	return ftl_dev_free(dev, cb_fn, cb_arg, spdk_get_thread());
 }
 

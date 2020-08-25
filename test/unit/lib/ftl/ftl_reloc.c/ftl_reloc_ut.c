@@ -58,6 +58,31 @@ DEFINE_STUB_V(ftl_free_io, (struct ftl_io *io));
 DEFINE_STUB_V(ftl_trace_lba_io_init, (struct spdk_ftl_dev *dev, const struct ftl_io *io));
 #endif
 
+void
+ftl_band_set_addr_unlocked(struct ftl_band *band, uint64_t lba, struct ftl_addr addr)
+{
+
+}
+
+struct ftl_band *
+ftl_band_from_addr(struct spdk_ftl_dev *dev, struct ftl_addr addr)
+{
+	return NULL;
+
+}
+
+bool ftl_update_l2p(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry,
+		    struct ftl_addr addr)
+{
+	return true;
+}
+
+void
+ftl_band_set_addr(struct ftl_band *band, uint64_t lba, struct ftl_addr addr)
+{
+
+}
+
 int
 ftl_band_alloc_lba_map(struct ftl_band *band)
 {
@@ -322,7 +347,7 @@ test_reloc_iter_full(void)
 		    (ftl_get_num_blocks_in_zone(dev) / reloc->xfer_size);
 
 	for (i = 0; i < num_iters; i++) {
-		num_blocks = ftl_reloc_next_blocks(breloc, &addr);
+		num_blocks = ftl_reloc_next_blocks(breloc, &addr, reloc->xfer_size);
 		CU_ASSERT_EQUAL(num_blocks, reloc->xfer_size);
 	}
 
@@ -334,7 +359,7 @@ test_reloc_iter_full(void)
 	/* is not divisible by xfer_size */
 	reminder = ftl_get_num_blocks_in_zone(dev) % reloc->xfer_size;
 	for (i = 0; i < num_iters; i++) {
-		num_blocks = ftl_reloc_next_blocks(breloc, &addr);
+		num_blocks = ftl_reloc_next_blocks(breloc, &addr, reloc->xfer_size);
 		CU_ASSERT_EQUAL(reminder, num_blocks);
 	}
 

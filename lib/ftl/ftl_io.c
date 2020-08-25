@@ -254,7 +254,12 @@ ftl_io_init_internal(const struct ftl_io_init_opts *opts)
 			io->lba.single = parent->lba.single + parent->pos;
 		}
 
-		iov = &parent->iov[parent->iov_pos];
+		if (opts->iovs[0].iov_base) {
+			iov = &opts->iovs[0];
+		} else {
+			iov = &parent->iov[parent->iov_pos];
+		}
+
 		iov_cnt = parent->iov_cnt - parent->iov_pos;
 		iov_off = parent->iov_off;
 	} else {
@@ -269,11 +274,8 @@ ftl_io_init_internal(const struct ftl_io_init_opts *opts)
 	}
 
 	if (opts->flags & FTL_IO_VECTOR_LBA) {
-		io->lba.vector = calloc(io->num_blocks, sizeof(uint64_t));
-		if (!io->lba.vector) {
-			ftl_io_free(io);
-			return NULL;
-		}
+		assert(opts->lba_vector != NULL);
+		io->lba.vector = opts->lba_vector;
 	}
 
 	return io;
@@ -385,10 +387,6 @@ _ftl_io_free(struct ftl_io *io)
 	struct ftl_io_channel *ioch;
 
 	/* FIXME assert(LIST_EMPTY(&io->children)); */
-
-	if (io->flags & FTL_IO_VECTOR_LBA) {
-		free(io->lba.vector);
-	}
 
 	if (pthread_spin_destroy(&io->lock)) {
 		SPDK_ERRLOG("pthread_spin_destroy failed\n");

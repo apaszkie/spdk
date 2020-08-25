@@ -83,6 +83,11 @@ enum ftl_io_type {
 
 #define FTL_IO_MAX_IOVEC 256
 
+struct ftl_reloc_chunk {
+	struct ftl_addr				addr;
+	size_t					num_blocks;
+};
+
 struct ftl_io_init_opts {
 	struct spdk_ftl_dev			*dev;
 
@@ -125,6 +130,9 @@ struct ftl_io_init_opts {
 
 	/* Callback's context */
 	void					*cb_ctx;
+
+	uint64_t				*lba_vector;
+
 };
 
 struct ftl_io_channel;
@@ -298,6 +306,10 @@ struct ftl_io {
 
 	/* Reference to the chunk within NV cache */
 	struct ftl_nv_cache_chunk *nv_cache_chunk;
+
+	struct ftl_reloc_chunk			chunk[128];
+
+	size_t					num_chunks;
 };
 
 /* Metadata IO */
