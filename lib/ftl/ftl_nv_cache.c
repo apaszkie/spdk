@@ -45,6 +45,9 @@ static struct ftl_nv_cache_compaction *
 compaction_alloc(struct spdk_ftl_dev *dev);
 
 static void
+compaction_process_ftl_done(struct ftl_batch *batch);
+
+static void
 compaction_process_iter(struct ftl_nv_cache_compaction *compaction);
 
 static void _nv_cache_bdev_event_cb(enum spdk_bdev_event_type type,
@@ -445,10 +448,11 @@ compaction_get_metadata(struct ftl_batch *batch, uint64_t md_size, uint64_t idx)
 }
 
 static void
-compaction_process_ftl_done(struct ftl_nv_cache_compaction *compaction)
+compaction_process_ftl_done(struct ftl_batch *batch)
 {
 	struct ftl_wbuf_entry *entry;
-	uint64_t num_entries = compaction->batch->num_entries;
+	struct ftl_nv_cache_compaction *compaction = batch->priv_data;
+	uint64_t num_entries = batch->num_entries;
 
 	entry = compaction->entries;
 	compaction->iter.idx = 0;
@@ -497,6 +501,7 @@ compaction_process_read_cb(struct spdk_bdev_io *bdev_io,
 
 	dev = compaction->nv_cache->ftl_dev;
 	current_addr = ftl_l2p_get(dev, md->lba);
+	entry->lba = md->lba;
 
 	if (ftl_addr_cmp(current_addr, entry->addr)) {
 		/*
@@ -508,9 +513,9 @@ compaction_process_read_cb(struct spdk_bdev_io *bdev_io,
 		if (!compaction->iter.remaining) {
 			/*
 			 * Batch already collected, compact it
-			 * TODO(mbarczak) Move it to FTL
 			 */
-			compaction_process_ftl_done(compaction);
+			TAILQ_INSERT_TAIL(&dev->pending_batches,
+					  compaction->batch, tailq);
 		}
 	} else {
 		int rc;
@@ -659,6 +664,8 @@ static struct ftl_nv_cache_compaction *compaction_alloc(
 	compaction->batch = batch = TAILQ_FIRST(&dev->free_batches);
 	TAILQ_REMOVE(&dev->free_batches, batch, tailq);
 	batch->num_entries = dev->xfer_size;
+	batch->priv_data = compaction;
+	batch->cb = compaction_process_ftl_done;
 
 	batch->metadata = spdk_mempool_get(dev->nv_cache.md_pool);
 	if (!batch->metadata) {
@@ -679,6 +686,7 @@ static struct ftl_nv_cache_compaction *compaction_alloc(
 		entry->lba = FTL_LBA_INVALID;
 		entry->addr.cached = true;
 		entry->index = i;
+		pthread_spin_init(&entry->lock, PTHREAD_PROCESS_PRIVATE);
 
 		batch->iov[i].iov_base = entry->payload;
 		batch->iov[i].iov_len = FTL_BLOCK_SIZE;

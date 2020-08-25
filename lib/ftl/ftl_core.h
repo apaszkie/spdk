@@ -103,6 +103,12 @@ struct ftl_batch {
 	struct iovec				*iov;
 	void					*metadata;
 	TAILQ_ENTRY(ftl_batch)			tailq;
+
+	/* Private data of the entry holder */
+	void					*priv_data;
+
+	/* Callback handler notifying batch job is done */
+	void (*cb)(struct ftl_batch *batch);
 };
 
 struct spdk_ftl_dev {

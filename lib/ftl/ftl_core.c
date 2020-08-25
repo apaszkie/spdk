@@ -180,80 +180,13 @@ static struct ftl_batch *
 ftl_get_next_batch(struct spdk_ftl_dev *dev)
 {
 	struct ftl_batch *batch = dev->current_batch;
-	struct ftl_io_channel *ioch;
-#define FTL_DEQUEUE_ENTRIES 128
-	struct ftl_wbuf_entry *entries[FTL_DEQUEUE_ENTRIES];
-	TAILQ_HEAD(, ftl_io_channel) ioch_queue;
-	size_t i, num_dequeued, num_remaining;
-	uint64_t *metadata;
 
-	if (batch == NULL) {
-		batch = TAILQ_FIRST(&dev->pending_batches);
-		if (batch != NULL) {
-			TAILQ_REMOVE(&dev->pending_batches, batch, tailq);
-			return batch;
-		}
-
-		batch = TAILQ_FIRST(&dev->free_batches);
-		if (spdk_unlikely(batch == NULL)) {
-			return NULL;
-		}
-
-		assert(TAILQ_EMPTY(&batch->entries));
-		assert(batch->num_entries == 0);
-		TAILQ_REMOVE(&dev->free_batches, batch, tailq);
+	if (TAILQ_EMPTY(&dev->pending_batches)) {
+		return NULL;
 	}
 
-	/*
-	 * Keep shifting the queue to ensure fairness in IO channel selection.  Each time
-	 * ftl_get_next_batch() is called, we're starting to dequeue write buffer entries from a
-	 * different IO channel.
-	 */
-	TAILQ_INIT(&ioch_queue);
-	while (!TAILQ_EMPTY(&dev->ioch_queue)) {
-		ioch = TAILQ_FIRST(&dev->ioch_queue);
-		TAILQ_REMOVE(&dev->ioch_queue, ioch, tailq);
-		TAILQ_INSERT_TAIL(&ioch_queue, ioch, tailq);
-
-		num_remaining = dev->xfer_size - batch->num_entries;
-		while (num_remaining > 0) {
-			num_dequeued = spdk_ring_dequeue(ioch->submit_queue, (void **)entries,
-							 spdk_min(num_remaining,
-									 FTL_DEQUEUE_ENTRIES));
-			if (num_dequeued == 0) {
-				break;
-			}
-
-			for (i = 0; i < num_dequeued; ++i) {
-				batch->iov[batch->num_entries + i].iov_base = entries[i]->payload;
-				batch->iov[batch->num_entries + i].iov_len = FTL_BLOCK_SIZE;
-
-				if (batch->metadata != NULL) {
-					metadata = (uint64_t *)((char *)batch->metadata +
-								i * dev->md_size);
-					*metadata = entries[i]->lba;
-				}
-
-				TAILQ_INSERT_TAIL(&batch->entries, entries[i], tailq);
-			}
-
-			batch->num_entries += num_dequeued;
-			num_remaining -= num_dequeued;
-		}
-
-		if (num_remaining == 0) {
-			break;
-		}
-	}
-
-	TAILQ_CONCAT(&dev->ioch_queue, &ioch_queue, tailq);
-
-	if (batch->num_entries == dev->xfer_size) {
-		dev->current_batch = NULL;
-	} else {
-		dev->current_batch = batch;
-		batch = NULL;
-	}
+	batch = TAILQ_FIRST(&dev->pending_batches);
+	TAILQ_REMOVE(&dev->pending_batches, batch, tailq);
 
 	return batch;
 }
@@ -262,6 +195,11 @@ static void
 ftl_release_batch(struct spdk_ftl_dev *dev, struct ftl_batch *batch)
 {
 	struct ftl_wbuf_entry *entry;
+
+	if (batch->cb) {
+		batch->cb(batch);
+		return;
+	}
 
 	while (!TAILQ_EMPTY(&batch->entries)) {
 		entry = TAILQ_FIRST(&batch->entries);
@@ -1474,7 +1412,7 @@ ftl_write_cb(struct ftl_io *io, void *arg, int status)
 	struct spdk_ftl_dev *dev = io->dev;
 	struct ftl_batch *batch = io->batch;
 	struct ftl_wbuf_entry *entry;
-	struct ftl_addr prev_addr, addr = io->addr;
+	struct ftl_addr addr = io->addr;
 
 	if (status) {
 		ftl_write_fail(io, status);
@@ -1485,27 +1423,8 @@ ftl_write_cb(struct ftl_io *io, void *arg, int status)
 	assert(!(io->flags & FTL_IO_MD));
 
 	TAILQ_FOREACH(entry, &batch->entries, tailq) {
-		if (!(entry->io_flags & FTL_IO_PAD)) {
-			/* Verify that the LBA is set for user blocks */
-			assert(entry->lba != FTL_LBA_INVALID);
-		}
-
-		entry->addr = addr;
-		if (entry->lba != FTL_LBA_INVALID) {
-			pthread_spin_lock(&entry->lock);
-			prev_addr = ftl_l2p_get(dev, entry->lba);
-
-			/* If the l2p was updated in the meantime, don't update band's metadata */
-			if (ftl_addr_cached(prev_addr) &&
-			    entry == ftl_get_entry_from_addr(dev, prev_addr)) {
-				/* Setting entry's cache bit needs to be done after metadata */
-				/* within the band is updated to make sure that writes */
-				/* invalidating the entry clear the metadata as well */
-				ftl_band_set_addr(io->band, entry->lba, entry->addr);
-				entry->valid = true;
-			}
-			pthread_spin_unlock(&entry->lock);
-		}
+		assert(entry->lba != FTL_LBA_INVALID);
+		ftl_update_l2p(dev, entry->lba, addr, entry->addr, true);
 
 		SPDK_DEBUGLOG(SPDK_LOG_FTL_CORE, "Write addr:%lu, lba:%lu\n",
 			      entry->addr.offset, entry->lba);
@@ -1756,7 +1675,6 @@ void
 ftl_apply_limits(struct spdk_ftl_dev *dev)
 {
 	const struct spdk_ftl_limit *limit;
-	struct ftl_io_channel *ioch;
 	struct ftl_stats *stats = &dev->stats;
 	int i;
 
@@ -1926,15 +1844,6 @@ ftl_process_writes(struct spdk_ftl_dev *dev)
 	}
 
 	return 0;
-}
-
-static void
-ftl_fill_wbuf_entry(struct ftl_wbuf_entry *entry, struct ftl_io *io)
-{
-	memcpy(entry->payload, ftl_io_iovec_addr(io), FTL_BLOCK_SIZE);
-
-	entry->trace = io->trace;
-	entry->lba = ftl_io_current_lba(io);
 }
 
 static bool
