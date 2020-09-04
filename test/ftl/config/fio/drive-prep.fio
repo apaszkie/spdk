@@ -11,6 +11,6 @@ size=100%
 randrepeat=0
 norandommap
 bs=128k
-iodepth=4
+iodepth=128
 numjobs=1
 rw=write

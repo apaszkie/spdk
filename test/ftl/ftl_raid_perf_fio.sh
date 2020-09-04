@@ -10,16 +10,21 @@ fio_kill() {
 	killprocess $svcpid
 }
 
-tests=('drive-prep war')
+tests=('drive-prep war war war')
 
 devices=(\
 '0000:5e:00.0' \
-'0000:5f:00.0' \
+'0000:8a:00.0' \
+'0000:8b:00.0' \
 '0000:b1:00.0' \
-'0000:b4:00.0' \
-'0000:b7:00.0' \
-'0000:ba:00.0' \
+'0000:b8:00.0' \
+'0000:bb:00.0' \
+'0000:bd:00.0' \
+'0000:d8:00.0' \
+'0000:d9:00.0' \
 )
+
+device_cache='0000:be:00.0'
 
 num_disks=$1
 disk_size=$2
@@ -50,9 +55,12 @@ for (( j=0; j<$num_disks; j++ )) do
 	nvme_ctrls+="${splits[0]} "
 done
 
+nv_cache=$($rpc_py bdev_nvme_attach_controller -b nvme${j} -a $device_cache -t pcie)
+nv_cache=$($rpc_py bdev_split_create -s $disk_size ${nv_cache} 1)
+
 $rpc_py bdev_raid_create -z 16 -r 0 -b "$nvme_ctrls" -n raid
 $rpc_py bdev_zone_block_create -z $zone_size -o 1 -b zone0 -w $write_unit_size -n raid
-$rpc_py bdev_ftl_create -b ftl0 -d zone0 --core_mask $core_mask --overprovisioning 20
+$rpc_py bdev_ftl_create -b ftl0 -d zone0 --core_mask $core_mask --overprovisioning 25 -c ${nv_cache}
 waitforbdev ftl0
 
 (
@@ -67,6 +75,9 @@ killprocess $svcpid
 trap - SIGINT SIGTERM EXIT
 
 for test in ${tests}; do
+	log=drives_"$num_disks"_size_"$disk_size"_zs_"$zone_size"_wus_"$write_unit_size"_cm_"$core_mask"_ioc_"$io_cores"_"$test"
+	log="$RESULTS_DIR$log"
+
 	timing_enter $test
 	fio_bdev $testdir/config/fio/$test.fio
 	timing_exit $test
