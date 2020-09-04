@@ -1499,7 +1499,7 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 
 	ftl_reloc_free(dev->reloc);
 
-	ftl_release_bdev(dev->nv_cache.bdev_desc);
+	ftl_nv_cache_deinit(dev);
 	ftl_release_bdev(dev->base_bdev_desc);
 
 	spdk_free(dev->md_buf);

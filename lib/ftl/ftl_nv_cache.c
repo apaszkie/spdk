@@ -67,6 +67,21 @@ static struct spdk_bdev_module _ftl_bdev_nv_cache_module = {
 	.name   = "ftl_lib_nv_cache",
 };
 
+void ftl_nv_cache_deinit(struct spdk_ftl_dev *dev)
+{
+	if (!dev->nv_cache.bdev_desc) {
+		return;
+	}
+
+	spdk_put_io_channel(dev->nv_cache.bdev_ioch);
+
+	spdk_bdev_module_release_bdev(spdk_bdev_desc_get_bdev(
+					      dev->nv_cache.bdev_desc));
+	spdk_bdev_close(dev->nv_cache.bdev_desc);
+
+	/* TODO(mbarczak) Cleanup fully */
+}
+
 int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 {
 	struct spdk_bdev *bdev;
@@ -709,6 +724,10 @@ ERROR:
 void ftl_nv_cache_compact(struct spdk_ftl_dev *dev)
 {
 	struct ftl_nv_cache *nv_cache = &dev->nv_cache;
+
+	if (!dev->nv_cache.bdev_desc) {
+		return;
+	}
 
 	if (!_is_compaction_required(nv_cache)) {
 		return;

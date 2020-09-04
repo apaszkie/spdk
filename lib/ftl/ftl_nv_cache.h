@@ -121,6 +121,8 @@ struct ftl_nv_cache {
 
 int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name);
 
+void ftl_nv_cache_deinit(struct spdk_ftl_dev *dev);
+
 uint64_t ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache,
 				    struct ftl_io *io);
 
