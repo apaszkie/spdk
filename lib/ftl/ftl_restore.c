@@ -831,7 +831,6 @@ ftl_nv_cache_scan_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 	struct ftl_nv_cache_range *range;
 	struct spdk_bdev *bdev;
 	unsigned int phase;
-	uint64_t lba;
 
 	restore->num_outstanding--;
 	bdev = spdk_bdev_desc_get_bdev(restore->nv_cache->bdev_desc);

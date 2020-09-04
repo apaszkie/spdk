@@ -1083,30 +1083,8 @@ ftl_read_canceled(int rc)
 }
 
 static int
-ftl_cache_read(struct ftl_io *io, uint64_t lba,
-	       struct ftl_addr addr, void *buf)
-{
-	struct ftl_wbuf_entry *entry;
-	struct ftl_addr naddr;
-	int rc = 0;
-
-	entry = ftl_get_entry_from_addr(io->dev, addr);
-	pthread_spin_lock(&entry->lock);
-
-	naddr = ftl_l2p_get(io->dev, lba);
-	if (addr.offset != naddr.offset) {
-		rc = -1;
-		goto out;
-	}
-
-	memcpy(buf, entry->payload, FTL_BLOCK_SIZE);
-out:
-	pthread_spin_unlock(&entry->lock);
-	return rc;
-}
-
-static int
-ftl_read_next_logical_addr(struct ftl_io *io, struct ftl_addr *addr)
+ftl_read_next_logical_addr(struct ftl_io *io, struct ftl_addr *addr,
+		spdk_bdev_io_completion_cb cb, void *cb_arg)
 {
 	struct spdk_ftl_dev *dev = io->dev;
 	struct ftl_addr next_addr;
@@ -1123,7 +1101,7 @@ ftl_read_next_logical_addr(struct ftl_io *io, struct ftl_addr *addr)
 	}
 
 	if (ftl_addr_cached(*addr)) {
-		if (!ftl_cache_read(io, ftl_io_current_lba(io), *addr, ftl_io_iovec_addr(io))) {
+		if (!ftl_nv_cache_read(io, *addr, cb, cb_arg)) {
 			return 0;
 		}
 
@@ -1162,7 +1140,8 @@ ftl_submit_read(struct ftl_io *io)
 		if (ftl_io_mode_physical(io)) {
 			num_blocks = rc = ftl_read_next_physical_addr(io, &addr);
 		} else {
-			num_blocks = rc = ftl_read_next_logical_addr(io, &addr);
+			num_blocks = rc = ftl_read_next_logical_addr(io, &addr,
+					ftl_io_cmpl_cb, io);
 		}
 
 		/* We might need to retry the read from scratch (e.g. */

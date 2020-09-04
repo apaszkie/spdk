@@ -280,7 +280,7 @@ ftl_trace_completion(struct spdk_ftl_dev *dev, const struct ftl_io *io,
 			case FTL_TRACE_COMPLETION_INVALID:
 				tpoint_id = FTL_TRACE_READ_COMPLETION_INVALID(source);
 				break;
-			case FTL_TRACE_COMPLETION_CACHE:
+			case FTL_TRACE_COMPLETION_CACHE_SUBMITTION:
 				tpoint_id = FTL_TRACE_READ_COMPLETION_CACHE(source);
 				break;
 			case FTL_TRACE_COMPLETION_DISK:

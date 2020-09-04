@@ -177,6 +177,12 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 		return -1;
 	}
 
+	nv_cache->md_rd = spdk_mempool_get(dev->nv_cache.md_pool);
+	if (!nv_cache->md_rd) {
+		SPDK_ERRLOG("Failed to initialize non-volatile cache metadata for reads\n");
+		return -1;
+	}
+
 	nv_cache->dma_buf = spdk_dma_zmalloc(FTL_BLOCK_SIZE, spdk_bdev_get_buf_align(bdev), NULL);
 	if (!nv_cache->dma_buf) {
 		SPDK_ERRLOG("Memory allocation failure\n");
@@ -737,4 +743,26 @@ void ftl_nv_cache_compact(struct spdk_ftl_dev *dev)
 		nv_cache->compaction_process->process(
 			nv_cache->compaction_process);
 	}
+}
+
+int ftl_nv_cache_read(struct ftl_io *io, struct ftl_addr addr,
+		spdk_bdev_io_completion_cb cb, void *cb_arg)
+{
+	int rc;
+	struct ftl_nv_cache *nv_cache = &io->dev->nv_cache;
+
+	assert(addr.cached);
+
+	rc = spdk_bdev_read_blocks_with_md(nv_cache->bdev_desc,
+					   nv_cache->bdev_ioch,
+					   ftl_io_iovec_addr(io),
+					   nv_cache->md_rd,
+					   addr.cache_offset, 1,
+					   cb, cb_arg);
+
+	if (!rc) {
+		ftl_io_inc_req(io);
+	}
+
+	return 0;
 }

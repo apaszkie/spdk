@@ -101,6 +101,8 @@ struct ftl_nv_cache {
 	bool                    ready;
 	/* Metadata pool */
 	struct spdk_mempool         *md_pool;
+	/* Metadata place holder for user's reads */
+	void *md_rd;
 	/* DMA buffer for writing the header */
 	void                    *dma_buf;
 
@@ -128,6 +130,9 @@ uint64_t ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache,
 
 void ftl_nv_cache_commit_wr_buffer(struct ftl_nv_cache *nv_cache,
 				   struct ftl_io *io);
+
+int ftl_nv_cache_read(struct ftl_io *io, struct ftl_addr addr,
+		spdk_bdev_io_completion_cb cb, void *cb_arg);
 
 void ftl_nv_cache_compact(struct spdk_ftl_dev *dev);
 
