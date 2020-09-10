@@ -1101,7 +1101,7 @@ ftl_read_next_logical_addr(struct ftl_io *io, struct ftl_addr *addr,
 	}
 
 	if (ftl_addr_cached(*addr)) {
-		if (!ftl_nv_cache_read(io, *addr, cb, cb_arg)) {
+		if (!ftl_nv_cache_read(io, *addr, 1, cb, cb_arg)) {
 			return 0;
 		}
 
@@ -1132,7 +1132,7 @@ ftl_submit_read(struct ftl_io *io)
 	struct ftl_addr addr;
 	int rc = 0, num_blocks;
 
-	ioch = ftl_io_channel_get_ctx(io->ioch);
+	ioch = ftl_io_channel_get_ctx(ftl_get_io_channel(io->dev));
 
 	assert(LIST_EMPTY(&io->children));
 
@@ -1155,7 +1155,7 @@ ftl_submit_read(struct ftl_io *io)
 		if (ftl_read_canceled(rc)) {
 			ftl_io_advance(io, 1);
 			ftl_trace_completion(io->dev, io, rc ? FTL_TRACE_COMPLETION_INVALID :
-					     FTL_TRACE_COMPLETION_CACHE);
+					     FTL_TRACE_COMPLETION_CACHE_SUBMITTION);
 			rc = 0;
 			continue;
 		}
@@ -1265,7 +1265,7 @@ ftl_update_nv_cache_l2p_update(struct ftl_io *io)
 	do {
 		ftl_update_l2p(dev, lba, next_addr, waek_addr, false);
 		next_addr.cache_offset++;
-	} while (lba++ < end_block);
+	} while (++lba < end_block);
 }
 
 static void
@@ -1301,15 +1301,12 @@ ftl_submit_nv_cache(void *ctx)
 	struct spdk_ftl_dev *dev = io->dev;
 	struct spdk_thread *thread;
 	struct ftl_nv_cache *nv_cache = &dev->nv_cache;
-	struct ftl_io_channel *ioch;
 	int rc;
 
-	ioch = ftl_io_channel_get_ctx(io->ioch);
 	thread = spdk_io_channel_get_thread(io->ioch);
 
-	rc = spdk_bdev_write_blocks_with_md(nv_cache->bdev_desc, ioch->cache_ioch,
-					    ftl_io_iovec_addr(io), io->md, io->addr.cache_offset,
-					    io->num_blocks, ftl_nv_cache_submit_cb, io);
+	rc = ftl_nv_cache_write(io, io->addr, io->num_blocks, io->md,
+			ftl_nv_cache_submit_cb, io);
 	if (rc == -ENOMEM) {
 		spdk_thread_send_msg(thread, ftl_submit_nv_cache, io);
 		return;
@@ -1324,25 +1321,6 @@ ftl_submit_nv_cache(void *ctx)
 	}
 
 	ftl_io_advance(io, io->num_blocks);
-	ftl_io_inc_req(io);
-}
-
-static void
-ftl_nv_cache_fill_md(struct ftl_io *io)
-{
-	struct spdk_bdev *bdev;
-	struct ftl_nv_cache *nv_cache = &io->dev->nv_cache;
-	uint64_t block_off;
-	void *md_buf = io->md;
-	uint64_t meta_size;
-
-	bdev = spdk_bdev_desc_get_bdev(nv_cache->bdev_desc);
-	meta_size = spdk_bdev_get_md_size(bdev);
-
-	for (block_off = 0; block_off < io->num_blocks; ++block_off) {
-		ftl_nv_cache_pack_lba(ftl_io_get_lba(io, block_off), md_buf);
-		md_buf += meta_size;
-	}
 }
 
 static void
@@ -1359,7 +1337,7 @@ _ftl_write_nv_cache(void *ctx)
 		num_blocks = ftl_io_iovec_len_left(io);
 
 		child = ftl_alloc_io_nv_cache(io, num_blocks);
-		child->ioch = dev->ioch; /* FIXME */
+		//child->ioch = dev->ioch; /* FIXME */
 		if (spdk_unlikely(!child)) {
 			spdk_thread_send_msg(thread, _ftl_write_nv_cache, io);
 			return;
@@ -2097,10 +2075,21 @@ spdk_ftl_write(struct spdk_ftl_dev *dev, struct ftl_io *io, struct spdk_io_chann
 	return 0;
 }
 
+static void
+_ftl_io_read(void *ctx)
+{
+	ftl_io_read((struct ftl_io *)ctx);
+}
+
 void
 ftl_io_read(struct ftl_io *io)
 {
-	ftl_io_call_foreach_child(io, ftl_submit_read);
+	if (ftl_check_core_thread(io->dev)) {
+		ftl_io_call_foreach_child(io, ftl_submit_read);
+	} else {
+		spdk_thread_send_msg(ftl_get_core_thread(io->dev),
+				_ftl_io_read, io);
+	}
 }
 
 int

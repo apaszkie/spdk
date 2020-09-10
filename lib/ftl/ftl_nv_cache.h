@@ -69,7 +69,8 @@ struct ftl_nv_cache_compaction {
 	struct ftl_nv_cache *nv_cache;
 	struct {
 		uint64_t idx;
-		uint64_t remaining;
+		uint64_t io_count;
+		uint64_t valid_count;
 		struct ftl_wbuf_entry *entry;
 	} iter;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_list;
@@ -82,8 +83,6 @@ struct ftl_nv_cache {
 	struct spdk_ftl_dev *ftl_dev;
 	/* Write buffer cache bdev */
 	struct spdk_bdev_desc   *bdev_desc;
-	/* Write buffer cache IO channel */
-	struct spdk_io_channel  *bdev_ioch;
 	/* Write pointer */
 	uint64_t                current_addr;
 	/* Number of available blocks left */
@@ -132,7 +131,12 @@ void ftl_nv_cache_commit_wr_buffer(struct ftl_nv_cache *nv_cache,
 				   struct ftl_io *io);
 
 int ftl_nv_cache_read(struct ftl_io *io, struct ftl_addr addr,
+		uint32_t num_blocks,
 		spdk_bdev_io_completion_cb cb, void *cb_arg);
+
+int ftl_nv_cache_write(struct ftl_io *io, struct ftl_addr addr,
+		uint32_t num_blocks,
+		void *md, spdk_bdev_io_completion_cb cb, void *cb_arg);
 
 void ftl_nv_cache_compact(struct spdk_ftl_dev *dev);
 
@@ -149,5 +153,8 @@ ftl_nv_cache_unpack_lba(void *md_buf)
 	struct ftl_nv_cache_block_metadata *md = md_buf;
 	return md->lba;
 }
+
+void ftl_nv_cache_fill_md(struct ftl_io *io);
+
 
 #endif  /* LIB_FTL_FTL_NV_CACHE_H_ */

@@ -740,12 +740,7 @@ ftl_restore_l2p_worker(void *ctx)
 	for (lba = restore->slba; lba < restore->slba + restore->num_lbas; ++lba) {
 		addr = ftl_l2p_get(dev, lba);
 
-		if (ftl_addr_cached(addr)) {
-			SPDK_ERRLOG("Cached addr: %lu\n", addr.offset);
-			assert(0);
-		}
-
-		if (ftl_addr_invalid(addr)) {
+		if (ftl_addr_invalid(addr) || ftl_addr_cached(addr)) {
 			continue;
 		}
 
