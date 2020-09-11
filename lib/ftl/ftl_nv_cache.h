@@ -75,6 +75,7 @@ struct ftl_nv_cache_compaction {
 	} iter;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_list;
 	uint64_t metadata_size;
+	TAILQ_ENTRY(ftl_nv_cache_compaction) entry;
 	struct ftl_wbuf_entry entries[];
 };
 
@@ -114,7 +115,7 @@ struct ftl_nv_cache {
 	struct ftl_nv_cache_chunk *chunk_current;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_free_list;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_full_list;
-	struct ftl_nv_cache_compaction *compaction_process;
+	TAILQ_HEAD(, ftl_nv_cache_compaction) compaction_list;
 
 	/* Cache lock */
 	pthread_spinlock_t          lock;

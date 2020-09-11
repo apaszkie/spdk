@@ -39,7 +39,7 @@
 #include "ftl_nv_cache.h"
 #include "ftl_core.h"
 
-#define FTL_NV_CACHE_CHUNK_SIZE_BYTES (128ULL * (1ULL << 20))
+#define FTL_NV_CACHE_CHUNK_SIZE_BYTES (256ULL * (1ULL << 10))
 
 static struct ftl_nv_cache_compaction *
 compaction_alloc(struct spdk_ftl_dev *dev);
@@ -293,11 +293,17 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 
 	/* Start compaction when full chunks exceed given % of entire chunks */
 	nv_cache->chunk_compaction_threshold = nv_cache->chunk_count * 9 / 10;
-	nv_cache->compaction_process = compaction_alloc(dev);
-	if (!nv_cache->compaction_process) {
-		SPDK_ERRLOG("Cannot allocate compaction process\n");
-		return -1;
-	}
+	TAILQ_INIT(&nv_cache->compaction_list);
+	for (i = 0; i < 128; i++) {
+		struct ftl_nv_cache_compaction *compact = compaction_alloc(dev);
+
+                if (!compact) {
+                  SPDK_ERRLOG("Cannot allocate compaction process\n");
+                  return -1;
+                }
+
+                TAILQ_INSERT_TAIL(&nv_cache->compaction_list, compact, entry);
+        }
 
 	return 0;
 }
@@ -795,6 +801,7 @@ ERROR:
 void ftl_nv_cache_compact(struct spdk_ftl_dev *dev)
 {
 	struct ftl_nv_cache *nv_cache = &dev->nv_cache;
+	struct ftl_nv_cache_compaction *iter;
 
 	if (!dev->nv_cache.bdev_desc) {
 		return;
@@ -804,9 +811,10 @@ void ftl_nv_cache_compact(struct spdk_ftl_dev *dev)
 		return;
 	}
 
-	if (nv_cache->compaction_process->process) {
-		nv_cache->compaction_process->process(
-			nv_cache->compaction_process);
+	TAILQ_FOREACH(iter, &nv_cache->compaction_list, entry) {
+		if (iter->process) {
+			iter->process(iter);
+		}
 	}
 }
 
