@@ -706,6 +706,12 @@ ftl_restore_device_cb(struct ftl_restore *restore, int status, void *cb_arg)
 		return;
 	}
 
+	/* TODO(mbarczak) Implement new recovery procedure due to new NV cache
+	 * implementation
+	 */
+	ftl_init_complete(init_ctx);
+	return;
+
 	if (!ftl_dev_has_nv_cache(dev)) {
 		ftl_init_complete(init_ctx);
 		return;
