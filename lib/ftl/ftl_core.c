@@ -293,6 +293,19 @@ ftl_release_batch(struct spdk_ftl_dev *dev, struct ftl_batch *batch)
 	TAILQ_INSERT_TAIL(&dev->free_batches, batch, tailq);
 }
 
+static struct ftl_addr
+ftl_get_addr_from_entry(struct ftl_wbuf_entry *entry)
+{
+        struct ftl_io_channel *ioch = entry->ioch;
+	struct ftl_addr addr = {};
+
+	addr.cached = 1;
+	addr.cache_offset = (uint64_t)entry->index << ioch->dev->ioch_shift | ioch->index;
+
+	return addr;
+}
+
+
 static struct ftl_wbuf_entry *
 ftl_get_entry_from_addr(struct spdk_ftl_dev *dev, struct ftl_addr addr)
 {

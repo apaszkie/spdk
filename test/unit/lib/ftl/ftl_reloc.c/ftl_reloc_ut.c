@@ -71,10 +71,11 @@ ftl_band_from_addr(struct spdk_ftl_dev *dev, struct ftl_addr addr)
 
 }
 
-bool ftl_update_l2p(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry,
-		    struct ftl_addr addr)
+void ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
+	            struct ftl_addr new_addr, struct ftl_addr weak_addr,
+	            bool io_weak)
 {
-	return true;
+	return;
 }
 
 void
