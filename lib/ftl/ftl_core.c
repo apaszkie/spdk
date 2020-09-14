@@ -1310,16 +1310,14 @@ ftl_submit_nv_cache(void *ctx)
 {
 	struct ftl_io *io = ctx;
 	struct spdk_ftl_dev *dev = io->dev;
-	struct spdk_thread *thread;
 	struct ftl_nv_cache *nv_cache = &dev->nv_cache;
 	int rc;
-
-	thread = spdk_io_channel_get_thread(io->ioch);
 
 	rc = ftl_nv_cache_write(io, io->addr, io->num_blocks, io->md,
 			ftl_nv_cache_submit_cb, io);
 	if (rc == -ENOMEM) {
-		spdk_thread_send_msg(thread, ftl_submit_nv_cache, io);
+		spdk_thread_send_msg(ftl_get_core_thread(dev),
+				ftl_submit_nv_cache, io);
 		return;
 	} else if (rc) {
 		SPDK_ERRLOG("Write to persistent cache failed: %s (%"PRIu64", %"PRIu64")\n",
@@ -1337,47 +1335,32 @@ ftl_submit_nv_cache(void *ctx)
 static void
 _ftl_write_nv_cache(void *ctx)
 {
-	struct ftl_io *child, *io = ctx;
+	struct ftl_io *io = ctx;
 	struct spdk_ftl_dev *dev = io->dev;
 	struct spdk_thread *thread;
-	uint64_t num_blocks;
 
-	thread = dev->core_thread;
-
-	while (io->pos < io->num_blocks) {
-		num_blocks = ftl_io_iovec_len_left(io);
-
-		child = ftl_alloc_io_nv_cache(io, num_blocks);
-		//child->ioch = dev->ioch; /* FIXME */
-		if (spdk_unlikely(!child)) {
-			spdk_thread_send_msg(thread, _ftl_write_nv_cache, io);
-			return;
-		}
-
-		child->md = spdk_mempool_get(dev->nv_cache.md_pool);
-		if (spdk_unlikely(!child->md)) {
-			ftl_io_free(child);
-			spdk_thread_send_msg(thread, _ftl_write_nv_cache, io);
-			break;
-		}
-
-		/* Reserve area on the write buffer cache */
-		child->addr.cache_offset = ftl_nv_cache_get_wr_buffer(&dev->nv_cache, child);
-		child->addr.cached = true;
-		if (child->addr.offset == FTL_LBA_INVALID) {
-			spdk_mempool_put(dev->nv_cache.md_pool, child->md);
-			ftl_io_free(child);
-			spdk_thread_send_msg(thread, _ftl_write_nv_cache, io);
-			break;
-		}
-
-		ftl_nv_cache_fill_md(child);
-		ftl_submit_nv_cache(child);
+	io->md = spdk_mempool_get(dev->nv_cache.md_pool);
+	if (spdk_unlikely(!io->md)) {
+		thread = dev->core_thread;
+		spdk_thread_send_msg(thread, _ftl_write_nv_cache, io);
+		return;
 	}
 
-	if (ftl_io_done(io)) {
-		ftl_io_complete(io);
+	/* Reserve area on the write buffer cache */
+	io->addr.cache_offset = ftl_nv_cache_get_wr_buffer(
+			&dev->nv_cache, io);
+	io->addr.cached = true;
+	if (io->addr.offset == FTL_LBA_INVALID) {
+		thread = dev->core_thread;
+		spdk_mempool_put(dev->nv_cache.md_pool, io->md);
+		spdk_thread_send_msg(thread, _ftl_write_nv_cache, io);
+		return;
 	}
+
+	ftl_nv_cache_fill_md(io);
+	ftl_submit_nv_cache(io);
+
+	assert(!ftl_io_iovec_len_left(io));
 }
 
 static int
