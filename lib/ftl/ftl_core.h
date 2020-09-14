@@ -108,7 +108,7 @@ struct ftl_batch {
 	void					*priv_data;
 
 	/* Callback handler notifying batch job is done */
-	void (*cb)(struct ftl_batch *batch);
+	void (*cb)(struct spdk_ftl_dev *ftl, struct ftl_batch *batch);
 };
 
 struct spdk_ftl_dev {

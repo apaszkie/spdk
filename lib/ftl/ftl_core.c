@@ -279,7 +279,7 @@ ftl_release_batch(struct spdk_ftl_dev *dev, struct ftl_batch *batch)
 	struct ftl_wbuf_entry *entry;
 
 	if (batch->cb) {
-		batch->cb(batch);
+		batch->cb(dev, batch);
 		return;
 	}
 
@@ -427,13 +427,11 @@ ftl_md_write_cb(struct ftl_io *io, void *arg, int status)
 	ftl_band_set_next_state(band);
 	if (band->state == FTL_BAND_STATE_CLOSED) {
 		if (ftl_dev_has_nv_cache(dev)) {
-			pthread_spin_lock(&nv_cache->lock);
 			nv_cache->num_available += ftl_band_user_blocks(band);
 
 			if (spdk_unlikely(nv_cache->num_available > nv_cache->num_data_blocks)) {
 				nv_cache->num_available = nv_cache->num_data_blocks;
 			}
-			pthread_spin_unlock(&nv_cache->lock);
 		}
 
 		/*
@@ -1044,7 +1042,8 @@ ftl_shutdown_complete(struct spdk_ftl_dev *dev)
 	return !__atomic_load_n(&dev->num_inflight, __ATOMIC_SEQ_CST) &&
 		__atomic_load_n(&dev->num_io_channels, __ATOMIC_SEQ_CST) == 1
 		&& LIST_EMPTY(&dev->wptr_list) &&
-	       TAILQ_EMPTY(&ioch->retry_queue);
+	       TAILQ_EMPTY(&ioch->retry_queue) &&
+	       !dev->nv_cache.compaction_active_count;
 }
 
 static int
@@ -1245,9 +1244,7 @@ ftl_nv_cache_wrap_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 		assert(0);
 	}
 
-	pthread_spin_lock(&nv_cache->lock);
 	nv_cache->ready = true;
-	pthread_spin_unlock(&nv_cache->lock);
 
 	spdk_bdev_free_io(bdev_io);
 }

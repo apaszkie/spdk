@@ -65,7 +65,6 @@ struct ftl_nv_cache_chunk {
 
 struct ftl_nv_cache_compaction {
 	struct ftl_batch *batch;
-	void (*process)(struct ftl_nv_cache_compaction *compaction);
 	struct ftl_nv_cache *nv_cache;
 	struct {
 		uint64_t idx;
@@ -106,6 +105,8 @@ struct ftl_nv_cache {
 	/* DMA buffer for writing the header */
 	void                    *dma_buf;
 
+	uint64_t load_blocks;
+
 	struct ftl_nv_cache_chunk *chunk;
 	uint64_t chunk_count;
 	uint64_t chunk_size;
@@ -116,9 +117,7 @@ struct ftl_nv_cache {
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_free_list;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_full_list;
 	TAILQ_HEAD(, ftl_nv_cache_compaction) compaction_list;
-
-	/* Cache lock */
-	pthread_spinlock_t          lock;
+	uint64_t compaction_active_count;
 };
 
 int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name);
