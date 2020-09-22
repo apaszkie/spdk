@@ -901,6 +901,9 @@ int ftl_nv_cache_write(struct ftl_io *io, struct ftl_addr addr,
 
 	assert(addr.cached);
 
+	//trace cache write buffer
+	ftl_trace_submission(io->dev, io, addr, num_blocks);
+
 	rc = __spdk_bdev_write_blocks_with_md(nv_cache->bdev_desc,
 					   ioch->cache_ioch,
 					   ftl_io_iovec_addr(io),

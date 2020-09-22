@@ -1298,6 +1298,11 @@ ftl_nv_cache_submit_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 	ftl_nv_cache_commit_wr_buffer(nv_cache, io);
 	ftl_io_dec_req(io);
 	if (ftl_io_done(io)) {
+
+		//trace cache write completion
+		ftl_trace_completion(io->dev, io, FTL_TRACE_COMPLETION_CACHE_SUBMITTION);
+				
+
 		spdk_mempool_put(nv_cache->md_pool, io->md);
 		ftl_io_complete(io);
 	}
