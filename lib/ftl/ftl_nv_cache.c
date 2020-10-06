@@ -880,7 +880,8 @@ int ftl_nv_cache_write(struct ftl_io *io, struct ftl_addr addr,
 	ftl_trace_submission(io->dev, io, addr, num_blocks);
 
 	rc = __spdk_bdev_write_blocks_with_md(
-		     nv_cache->bdev_desc, ioch->cache_ioch, ftl_io_iovec_addr(io), md,
+		     nv_cache->bdev_desc, ioch->cache_ioch,
+		     ftl_io_iovec_addr(io), md,
 		     addr.cache_offset, num_blocks, cb, cb_arg);
 
 	if (spdk_likely(0 == rc)) {
