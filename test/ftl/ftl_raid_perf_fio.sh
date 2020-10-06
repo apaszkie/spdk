@@ -7,7 +7,7 @@ source $testdir/common.sh
 rpc_py=$rootdir/scripts/rpc.py
 
 fio_kill() {
-	killprocess $svcpid
+    killprocess $svcpid
 }
 
 tests=('drive-prep war war war')
@@ -35,8 +35,8 @@ io_cores=$6
 RESULTS_DIR=$7
 
 if [[ $CONFIG_FIO_PLUGIN != y ]]; then
-	echo "FIO not available"
-	exit 1
+    echo "FIO not available"
+    exit 1
 fi
 
 export FTL_BDEV_NAME=ftl0
@@ -50,13 +50,14 @@ waitforlisten $svcpid
 
 nvme_ctrls=""
 for (( j=0; j<$num_disks; j++ )) do
-	$rpc_py bdev_nvme_attach_controller -b nvme${j} -a ${devices[$j]} -t pcie
-	splits=$($rpc_py bdev_split_create -s $disk_size nvme${j}n1 1)
-	nvme_ctrls+="${splits[0]} "
+    $rpc_py bdev_nvme_attach_controller -b nvme${j} -a ${devices[$j]} -t pcie
+    splits=$($rpc_py bdev_split_create -s $disk_size nvme${j}n1 1)
+    nvme_ctrls+="${splits[0]} "
 done
 
+nv_cache_size=$[ ${disk_size} * ${num_disks} * 5 / 100 ]
 nv_cache=$($rpc_py bdev_nvme_attach_controller -b nvme${j} -a $device_cache -t pcie)
-nv_cache=$($rpc_py bdev_split_create -s $disk_size ${nv_cache} 1)
+nv_cache=$($rpc_py bdev_split_create -s $nv_cache_size ${nv_cache} 1)
 
 $rpc_py bdev_raid_create -z 16 -r 0 -b "$nvme_ctrls" -n raid
 $rpc_py bdev_zone_block_create -z $zone_size -o 1 -b zone0 -w $write_unit_size -n raid
@@ -64,9 +65,9 @@ $rpc_py bdev_ftl_create -b ftl0 -d zone0 --core_mask $core_mask --overprovisioni
 waitforbdev ftl0
 
 (
-	echo '{"subsystems": ['
-	$rpc_py save_subsystem_config -n bdev
-	echo ']}'
+    echo '{"subsystems": ['
+    $rpc_py save_subsystem_config -n bdev
+    echo ']}'
 ) > $FTL_JSON_CONF
 
 killprocess $svcpid
@@ -75,12 +76,10 @@ killprocess $svcpid
 trap - SIGINT SIGTERM EXIT
 
 for test in ${tests}; do
-	log=drives_"$num_disks"_size_"$disk_size"_zs_"$zone_size"_wus_"$write_unit_size"_cm_"$core_mask"_ioc_"$io_cores"_"$test"
-	log="$RESULTS_DIR$log"
+    log=drives_"$num_disks"_size_"$disk_size"_zs_"$zone_size"_wus_"$write_unit_size"_cm_"$core_mask"_ioc_"$io_cores"_"$test"
+    log="$RESULTS_DIR$log"
 
-	timing_enter $test
-	fio_bdev $testdir/config/fio/$test.fio
-	timing_exit $test
+    timing_enter $test
+    fio_bdev $testdir/config/fio/$test.fio
+    timing_exit $test
 done
-
-
