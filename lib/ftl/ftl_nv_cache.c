@@ -31,48 +31,43 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "spdk/ftl.h"
-#include "spdk/log.h"
+#include "ftl_nv_cache.h"
+
+#include "ftl_core.h"
 #include "spdk/bdev.h"
 #include "spdk/bdev_module.h"
-
-#include "ftl_nv_cache.h"
-#include "ftl_core.h"
+#include "spdk/ftl.h"
+#include "spdk/log.h"
 
 #define FTL_NV_CACHE_CHUNK_SIZE_BYTES (256 * (1ULL << 10))
 
-static struct ftl_nv_cache_compaction *
-compaction_alloc(struct spdk_ftl_dev *dev);
+static struct ftl_nv_cache_compaction *compaction_alloc(
+	struct spdk_ftl_dev *dev);
 
-static void
-compaction_process_ftl_done(struct spdk_ftl_dev *ftl, struct ftl_batch *batch);
+static void compaction_process_ftl_done(struct spdk_ftl_dev *ftl,
+					struct ftl_batch *batch);
 
-static void
-compaction_process_start(struct ftl_nv_cache_compaction *compaction);
+static void compaction_process_start(
+	struct ftl_nv_cache_compaction *compaction);
 
-static void
-compaction_process_read(struct ftl_nv_cache_compaction *compaction);
+static void compaction_process_read(struct ftl_nv_cache_compaction *compaction);
 
-static inline uint32_t
-__spdk_bdev_get_md_size(const struct spdk_bdev *bdev)
+static inline uint32_t __spdk_bdev_get_md_size(const struct spdk_bdev *bdev)
 {
 	return 64;
 }
 
-static bool
-compaction_entry_is_invalid(struct  ftl_wbuf_entry *entry)
+static bool compaction_entry_is_invalid(struct ftl_wbuf_entry *entry)
 {
 	return 0 == (entry->io_flags & FTL_IO_NV_CACHE_COMPACT);
 }
 
-static void
-compaction_entry_set_valid(struct  ftl_wbuf_entry *entry)
+static void compaction_entry_set_valid(struct ftl_wbuf_entry *entry)
 {
 	entry->io_flags |= FTL_IO_NV_CACHE_COMPACT;
 }
 
-static void
-compaction_entry_clear_valid(struct  ftl_wbuf_entry *entry)
+static void compaction_entry_clear_valid(struct ftl_wbuf_entry *entry)
 {
 	entry->io_flags &= ~FTL_IO_NV_CACHE_COMPACT;
 }
@@ -81,14 +76,14 @@ static struct ftl_nv_cache_block_metadata *vss;
 static int64_t vss_size;
 static int64_t vss_md_size;
 
-static int
-__spdk_bdev_read_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
-			      void *buf, void *md_buf, int64_t offset_blocks, uint64_t num_blocks,
-			      spdk_bdev_io_completion_cb cb, void *cb_arg)
+static int __spdk_bdev_read_blocks_with_md(
+	struct spdk_bdev_desc *desc, struct spdk_io_channel *ch, void *buf,
+	void *md_buf, int64_t offset_blocks, uint64_t num_blocks,
+	spdk_bdev_io_completion_cb cb, void *cb_arg)
 {
 	void *iter_buf = md_buf;
 	int64_t iter_offset = offset_blocks;
-	int64_t iter_offset_end =  offset_blocks + num_blocks;
+	int64_t iter_offset_end = offset_blocks + num_blocks;
 
 	while (iter_offset < iter_offset_end) {
 		struct ftl_nv_cache_block_metadata *md = iter_buf;
@@ -100,18 +95,18 @@ __spdk_bdev_read_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_chan
 		iter_buf += vss_md_size;
 	}
 
-	return spdk_bdev_read_blocks(desc, ch, buf, offset_blocks, num_blocks,
-			      cb, cb_arg);
+	return spdk_bdev_read_blocks(desc, ch, buf, offset_blocks, num_blocks, cb,
+				     cb_arg);
 }
 
-static int
-__spdk_bdev_write_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
-			      void *buf, void *md_buf, int64_t offset_blocks, uint64_t num_blocks,
-			      spdk_bdev_io_completion_cb cb, void *cb_arg)
+static int __spdk_bdev_write_blocks_with_md(
+	struct spdk_bdev_desc *desc, struct spdk_io_channel *ch, void *buf,
+	void *md_buf, int64_t offset_blocks, uint64_t num_blocks,
+	spdk_bdev_io_completion_cb cb, void *cb_arg)
 {
 	void *iter_buf = md_buf;
 	int64_t iter_offset = offset_blocks;
-	int64_t iter_offset_end =  offset_blocks + num_blocks;
+	int64_t iter_offset_end = offset_blocks + num_blocks;
 
 	while (iter_offset < iter_offset_end) {
 		struct ftl_nv_cache_block_metadata *md = iter_buf;
@@ -123,11 +118,9 @@ __spdk_bdev_write_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_cha
 		iter_buf += vss_md_size;
 	}
 
-	return spdk_bdev_write_blocks(desc, ch, buf, offset_blocks, num_blocks,
-			      cb, cb_arg);
+	return spdk_bdev_write_blocks(desc, ch, buf, offset_blocks, num_blocks, cb,
+				      cb_arg);
 }
-
-
 
 static void _nv_cache_bdev_event_cb(enum spdk_bdev_event_type type,
 				    struct spdk_bdev *bdev, void *event_ctx)
@@ -143,7 +136,7 @@ static void _nv_cache_bdev_event_cb(enum spdk_bdev_event_type type,
 
 /* Dummy bdev module used to to claim bdevs. */
 static struct spdk_bdev_module _ftl_bdev_nv_cache_module = {
-	.name   = "ftl_lib_nv_cache",
+	.name = "ftl_lib_nv_cache",
 };
 
 void ftl_nv_cache_deinit(struct spdk_ftl_dev *dev)
@@ -152,8 +145,8 @@ void ftl_nv_cache_deinit(struct spdk_ftl_dev *dev)
 		return;
 	}
 
-	spdk_bdev_module_release_bdev(spdk_bdev_desc_get_bdev(
-					      dev->nv_cache.bdev_desc));
+	spdk_bdev_module_release_bdev(
+		spdk_bdev_desc_get_bdev(dev->nv_cache.bdev_desc));
 	spdk_bdev_close(dev->nv_cache.bdev_desc);
 
 	/* TODO(mbarczak) Cleanup fully */
@@ -179,8 +172,8 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 		return -1;
 	}
 
-	if (spdk_bdev_open_ext(bdev_name, true, _nv_cache_bdev_event_cb,
-			       dev, &nv_cache->bdev_desc)) {
+	if (spdk_bdev_open_ext(bdev_name, true, _nv_cache_bdev_event_cb, dev,
+			       &nv_cache->bdev_desc)) {
 		SPDK_ERRLOG("Unable to open bdev: %s\n", bdev_name);
 		return -1;
 	}
@@ -197,37 +190,41 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 		     spdk_bdev_get_name(bdev));
 
 	if (spdk_bdev_get_block_size(bdev) != FTL_BLOCK_SIZE) {
-		SPDK_ERRLOG("Unsupported block size (%d)\n", spdk_bdev_get_block_size(bdev));
+		SPDK_ERRLOG("Unsupported block size (%d)\n",
+			    spdk_bdev_get_block_size(bdev));
 		return -1;
 	}
 
-//	if (!spdk_bdev_is_md_separate(bdev)) {
-//		SPDK_ERRLOG("Bdev %s doesn't support separate metadata buffer IO\n",
-//			    spdk_bdev_get_name(bdev));
-//		return -1;
-//	}
-//
-//	if (____spdk_bdev_get_md_size(bdev) < sizeof(struct ftl_nv_cache_block_metadata)) {
-//		SPDK_ERRLOG("Bdev's %s metadata is too small (%"PRIu32")\n",
-//			    spdk_bdev_get_name(bdev), ____spdk_bdev_get_md_size(bdev));
-//		return -1;
-//	}
-//
-//	if (spdk_bdev_get_dif_type(bdev) != SPDK_DIF_DISABLE) {
-//		SPDK_ERRLOG("Unsupported DIF type used by bdev %s\n",
-//			    spdk_bdev_get_name(bdev));
-//		return -1;
-//	}
+	//	if (!spdk_bdev_is_md_separate(bdev)) {
+	//		SPDK_ERRLOG("Bdev %s doesn't support separate metadata buffer
+	//IO\n", 			    spdk_bdev_get_name(bdev)); 		return -1;
+	//	}
+	//
+	//	if (____spdk_bdev_get_md_size(bdev) < sizeof(struct
+	//ftl_nv_cache_block_metadata)) { 		SPDK_ERRLOG("Bdev's %s metadata is too small
+	//(%"PRIu32")\n", 			    spdk_bdev_get_name(bdev), ____spdk_bdev_get_md_size(bdev));
+	//		return -1;
+	//	}
+	//
+	//	if (spdk_bdev_get_dif_type(bdev) != SPDK_DIF_DISABLE) {
+	//		SPDK_ERRLOG("Unsupported DIF type used by bdev %s\n",
+	//			    spdk_bdev_get_name(bdev));
+	//		return -1;
+	//	}
 
-	/* The cache needs to be capable of storing at least two full bands. This requirement comes
-	 * from the fact that cache works as a protection against power loss, so before the data
-	 * inside the cache can be overwritten, the band it's stored on has to be closed. Plus one
-	 * extra block is needed to store the header.
+	/* The cache needs to be capable of storing at least two full bands. This
+	 * requirement comes from the fact that cache works as a protection against
+	 * power loss, so before the data inside the cache can be overwritten, the
+	 * band it's stored on has to be closed. Plus one extra block is needed to
+	 * store the header.
 	 */
-	if (spdk_bdev_get_num_blocks(bdev) < ftl_get_num_blocks_in_band(dev) * 2 + 1) {
-		SPDK_ERRLOG("Insufficient number of blocks for write buffer cache (available: %"
-			    PRIu64", required: %"PRIu64")\n", spdk_bdev_get_num_blocks(bdev),
-			    ftl_get_num_blocks_in_band(dev) * 2 + 1);
+	if (spdk_bdev_get_num_blocks(bdev) <
+	    ftl_get_num_blocks_in_band(dev) * 2 + 1) {
+		SPDK_ERRLOG(
+			"Insufficient number of blocks for write buffer cache (available: "
+			"%" PRIu64 ", required: %" PRIu64 ")\n",
+			spdk_bdev_get_num_blocks(bdev),
+			ftl_get_num_blocks_in_band(dev) * 2 + 1);
 		return -1;
 	}
 
@@ -236,12 +233,10 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 		return -1;
 	}
 
-	nv_cache->md_pool = spdk_mempool_create(pool_name,
-						conf->nv_cache.max_request_cnt * 2,
-						__spdk_bdev_get_md_size(bdev) *
-						conf->nv_cache.max_request_size,
-						SPDK_MEMPOOL_DEFAULT_CACHE_SIZE,
-						SPDK_ENV_SOCKET_ID_ANY);
+	nv_cache->md_pool = spdk_mempool_create(
+				    pool_name, conf->nv_cache.max_request_cnt * 2,
+				    __spdk_bdev_get_md_size(bdev) * conf->nv_cache.max_request_size,
+				    SPDK_MEMPOOL_DEFAULT_CACHE_SIZE, SPDK_ENV_SOCKET_ID_ANY);
 	if (!nv_cache->md_pool) {
 		SPDK_ERRLOG("Failed to initialize non-volatile cache metadata pool\n");
 		return -1;
@@ -253,7 +248,8 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 		return -1;
 	}
 
-	nv_cache->dma_buf = spdk_dma_zmalloc(FTL_BLOCK_SIZE, spdk_bdev_get_buf_align(bdev), NULL);
+	nv_cache->dma_buf =
+		spdk_dma_zmalloc(FTL_BLOCK_SIZE, spdk_bdev_get_buf_align(bdev), NULL);
 	if (!nv_cache->dma_buf) {
 		SPDK_ERRLOG("Memory allocation failure\n");
 		return -1;
@@ -295,13 +291,13 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 	for (i = 0; i < 128; i++) {
 		struct ftl_nv_cache_compaction *compact = compaction_alloc(dev);
 
-                if (!compact) {
-                  SPDK_ERRLOG("Cannot allocate compaction process\n");
-                  return -1;
-                }
+		if (!compact) {
+			SPDK_ERRLOG("Cannot allocate compaction process\n");
+			return -1;
+		}
 
-                TAILQ_INSERT_TAIL(&nv_cache->compaction_list, compact, entry);
-        }
+		TAILQ_INSERT_TAIL(&nv_cache->compaction_list, compact, entry);
+	}
 
 	return 0;
 }
@@ -316,8 +312,9 @@ static bool _is_compaction_required(struct ftl_nv_cache *nv_cache)
 		return false;
 	}
 
-	uint64_t compacted_load_blocks = nv_cache->compaction_active_count
-			* (FTL_NV_CACHE_CHUNK_SIZE_BYTES / FTL_BLOCK_SIZE);
+	uint64_t compacted_load_blocks =
+		nv_cache->compaction_active_count *
+		(FTL_NV_CACHE_CHUNK_SIZE_BYTES / FTL_BLOCK_SIZE);
 
 	if (compacted_load_blocks > nv_cache->load_blocks) {
 		return false;
@@ -328,8 +325,7 @@ static bool _is_compaction_required(struct ftl_nv_cache *nv_cache)
 
 static bool is_chunk_compacted(struct ftl_nv_cache_chunk *chunk)
 {
-	uint64_t blocks_to_compact = chunk->blocks_written -
-				     chunk->blocks_skipped;
+	uint64_t blocks_to_compact = chunk->blocks_written - chunk->blocks_skipped;
 
 	assert(chunk->blocks_written != 0);
 
@@ -353,8 +349,8 @@ static bool is_chunk_to_read(struct ftl_nv_cache_chunk *chunk)
 	return true;
 }
 
-static struct ftl_nv_cache_chunk *
-get_chunk_for_compaction(struct ftl_nv_cache_compaction *compaction)
+static struct ftl_nv_cache_chunk *get_chunk_for_compaction(
+	struct ftl_nv_cache_compaction *compaction)
 {
 	struct ftl_nv_cache *nv_cache = compaction->nv_cache;
 	struct ftl_nv_cache_chunk *chunk = NULL;
@@ -380,9 +376,8 @@ get_chunk_for_compaction(struct ftl_nv_cache_compaction *compaction)
 	return chunk;
 }
 
-static void
-chunk_compaction_advance(struct ftl_nv_cache_compaction *compaction,
-			 struct ftl_nv_cache_chunk *chunk)
+static void chunk_compaction_advance(struct ftl_nv_cache_compaction *compaction,
+				     struct ftl_nv_cache_chunk *chunk)
 {
 	uint64_t offset = chunk->offset;
 	struct ftl_nv_cache *nv_cache = compaction->nv_cache;
@@ -403,9 +398,8 @@ chunk_compaction_advance(struct ftl_nv_cache_compaction *compaction,
 	nv_cache->chunk_full_count--;
 }
 
-static uint64_t _chunk_get_free_space(
-	struct ftl_nv_cache *nv_cache,
-	struct ftl_nv_cache_chunk *chunk)
+static uint64_t _chunk_get_free_space(struct ftl_nv_cache *nv_cache,
+				      struct ftl_nv_cache_chunk *chunk)
 {
 	if (spdk_likely(chunk->write_pointer <= nv_cache->chunk_size)) {
 		return nv_cache->chunk_size - chunk->write_pointer;
@@ -415,9 +409,9 @@ static uint64_t _chunk_get_free_space(
 	}
 }
 
-static void _chunk_skip_blocks(
-	struct ftl_nv_cache *nv_cache,
-	struct ftl_nv_cache_chunk *chunk, uint64_t skipped_blocks)
+static void _chunk_skip_blocks(struct ftl_nv_cache *nv_cache,
+			       struct ftl_nv_cache_chunk *chunk,
+			       uint64_t skipped_blocks)
 {
 	nv_cache->chunk_current = NULL;
 
@@ -437,9 +431,9 @@ static void _chunk_skip_blocks(
 	}
 }
 
-static void _chunk_advance_blocks(
-	struct ftl_nv_cache *nv_cache,
-	struct ftl_nv_cache_chunk *chunk, uint64_t advanced_blocks)
+static void _chunk_advance_blocks(struct ftl_nv_cache *nv_cache,
+				  struct ftl_nv_cache_chunk *chunk,
+				  uint64_t advanced_blocks)
 {
 	chunk->blocks_written += advanced_blocks;
 
@@ -534,8 +528,7 @@ static void compaction_free(struct spdk_ftl_dev *dev,
 
 	if (compaction->batch) {
 		if (compaction->batch->metadata) {
-			spdk_mempool_put(dev->nv_cache.md_pool,
-					 compaction->batch->metadata);
+			spdk_mempool_put(dev->nv_cache.md_pool, compaction->batch->metadata);
 		}
 
 		for (i = 0; i < compaction->batch->num_entries; ++i) {
@@ -551,15 +544,15 @@ static void compaction_free(struct spdk_ftl_dev *dev,
 	free(compaction);
 }
 
-static struct ftl_nv_cache_block_metadata *
-compaction_get_metadata(struct ftl_batch *batch, uint64_t md_size, uint64_t idx)
+static struct ftl_nv_cache_block_metadata *compaction_get_metadata(
+	struct ftl_batch *batch, uint64_t md_size, uint64_t idx)
 {
 	off_t offset = md_size * idx;
 	return (struct ftl_nv_cache_block_metadata *)(batch->metadata + offset);
 }
 
-static void
-compaction_process_ftl_done(struct spdk_ftl_dev *ftl, struct ftl_batch *batch)
+static void compaction_process_ftl_done(struct spdk_ftl_dev *ftl,
+					struct ftl_batch *batch)
 {
 	struct ftl_wbuf_entry *entry;
 	struct ftl_nv_cache_compaction *compaction = batch->priv_data;
@@ -586,15 +579,12 @@ compaction_process_ftl_done(struct spdk_ftl_dev *ftl, struct ftl_batch *batch)
 		compaction_process_start(compaction);
 	} else {
 		nv_cache->compaction_active_count--;
-		TAILQ_INSERT_TAIL(&nv_cache->compaction_list, compaction,
-				entry);
+		TAILQ_INSERT_TAIL(&nv_cache->compaction_list, compaction, entry);
 	}
 }
 
-static void
-compaction_process_read_cb(struct spdk_bdev_io *bdev_io,
-			   bool success,
-			   void *cb_arg)
+static void compaction_process_read_cb(struct spdk_bdev_io *bdev_io,
+				       bool success, void *cb_arg)
 {
 	struct spdk_ftl_dev *dev;
 	struct ftl_nv_cache_block_metadata *md;
@@ -611,11 +601,11 @@ compaction_process_read_cb(struct spdk_bdev_io *bdev_io,
 		assert(0);
 	}
 
-	compaction = SPDK_CONTAINEROF(entry, struct ftl_nv_cache_compaction,
-				      entries[idx]);
+	compaction =
+		SPDK_CONTAINEROF(entry, struct ftl_nv_cache_compaction, entries[idx]);
 
-	md = compaction_get_metadata(compaction->batch,
-				     compaction->metadata_size, idx);
+	md = compaction_get_metadata(compaction->batch, compaction->metadata_size,
+				     idx);
 
 	dev = compaction->nv_cache->ftl_dev;
 
@@ -649,8 +639,7 @@ compaction_process_read_cb(struct spdk_bdev_io *bdev_io,
 			/*
 			 * Batch already collected, compact it
 			 */
-			TAILQ_INSERT_TAIL(&dev->pending_batches,
-					  compaction->batch, tailq);
+			TAILQ_INSERT_TAIL(&dev->pending_batches, compaction->batch, tailq);
 		} else {
 			struct ftl_nv_cache *nv_cache = compaction->nv_cache;
 
@@ -658,53 +647,46 @@ compaction_process_read_cb(struct spdk_bdev_io *bdev_io,
 				compaction_process_start(compaction);
 			} else {
 				nv_cache->compaction_active_count--;
-				TAILQ_INSERT_HEAD(
-					&nv_cache->compaction_list,
-					compaction, entry);
+				TAILQ_INSERT_HEAD(&nv_cache->compaction_list, compaction, entry);
 			}
 		}
 	}
 }
 
-static void
-msg_compaction_process_read(void* compaction)
+static void msg_compaction_process_read(void *compaction)
 {
 	compaction_process_read(compaction);
 }
 
-static void
-compaction_process_read(struct ftl_nv_cache_compaction *compaction)
+static void compaction_process_read(
+	struct ftl_nv_cache_compaction *compaction)
 {
 	int rc;
 	struct ftl_wbuf_entry *entry;
 	struct ftl_nv_cache *nv_cache = compaction->nv_cache;
 
-	struct ftl_io_channel *ioch = ftl_io_channel_get_ctx(
-			ftl_get_io_channel(nv_cache->ftl_dev));
+	struct ftl_io_channel *ioch =
+		ftl_io_channel_get_ctx(ftl_get_io_channel(nv_cache->ftl_dev));
 
 	uint64_t num_entries = compaction->batch->num_entries;
 	uint64_t md_size = compaction->metadata_size;
 	void *md;
 
 	entry = compaction->iter.entry;
-	md = compaction_get_metadata(compaction->batch, md_size,
-				     compaction->iter.idx);
+	md =
+		compaction_get_metadata(compaction->batch, md_size, compaction->iter.idx);
 
 	while (compaction->iter.idx < num_entries) {
 		if (compaction_entry_is_invalid(entry)) {
 			rc = __spdk_bdev_read_blocks_with_md(
-					nv_cache->bdev_desc,
-					ioch->cache_ioch,
-					entry->payload,
-					md,
-					entry->addr.cache_offset, 1,
-					compaction_process_read_cb, entry);
+				     nv_cache->bdev_desc, ioch->cache_ioch, entry->payload, md,
+				     entry->addr.cache_offset, 1, compaction_process_read_cb, entry);
 
 			if (spdk_likely(0 == rc)) {
 				compaction_entry_set_valid(entry);
 			}
 
-                } else {
+		} else {
 			rc = 0;
 		}
 
@@ -727,19 +709,18 @@ compaction_process_read(struct ftl_nv_cache_compaction *compaction)
 	} else {
 		compaction->iter.entry = entry;
 
-		spdk_thread_send_msg(spdk_get_thread(),
-				msg_compaction_process_read, compaction);
+		spdk_thread_send_msg(spdk_get_thread(), msg_compaction_process_read,
+				     compaction);
 	}
 }
 
-static void
-msg_compaction_process_start(void *compaction)
+static void msg_compaction_process_start(void *compaction)
 {
 	compaction_process_start(compaction);
 }
 
-static void
-compaction_process_start(struct ftl_nv_cache_compaction *compaction)
+static void compaction_process_start(
+	struct ftl_nv_cache_compaction *compaction)
 {
 	struct ftl_nv_cache_chunk *chunk;
 	struct ftl_wbuf_entry *entry;
@@ -761,10 +742,10 @@ compaction_process_start(struct ftl_nv_cache_compaction *compaction)
 		entry++;
 	}
 
-	assert(compaction->iter.io_count + compaction->iter.valid_count
-			== num_entries);
+	assert(compaction->iter.io_count + compaction->iter.valid_count ==
+	       num_entries);
 
-	if (spdk_likely(compaction->iter.idx == num_entries)) {
+	if (compaction->iter.idx == num_entries) {
 		compaction->iter.idx = 0;
 		compaction->iter.entry = compaction->entries;
 
@@ -772,24 +753,23 @@ compaction_process_start(struct ftl_nv_cache_compaction *compaction)
 	} else {
 		compaction->iter.entry = entry;
 
-		spdk_thread_send_msg(spdk_get_thread(),
-				msg_compaction_process_start, compaction);
+		spdk_thread_send_msg(spdk_get_thread(), msg_compaction_process_start,
+				     compaction);
 	}
 }
 
 static struct ftl_nv_cache_compaction *compaction_alloc(
 	struct spdk_ftl_dev *dev)
 {
-	struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(
-					 dev->nv_cache.bdev_desc);
+	struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(dev->nv_cache.bdev_desc);
 	struct ftl_batch *batch;
 	struct ftl_nv_cache_compaction *compaction;
 	struct ftl_wbuf_entry *entry;
 	uint64_t i;
 	size_t size;
 
-	size = sizeof(*compaction) + (sizeof(compaction->entries[0])
-				      * dev->xfer_size);
+	size =
+		sizeof(*compaction) + (sizeof(compaction->entries[0]) * dev->xfer_size);
 	compaction = calloc(1, size);
 	if (!compaction) {
 		goto ERROR;
@@ -813,10 +793,8 @@ static struct ftl_nv_cache_compaction *compaction_alloc(
 
 	entry = compaction->entries;
 	for (i = 0; i < batch->num_entries; ++i, ++entry) {
-		entry->payload = spdk_zmalloc(FTL_BLOCK_SIZE,
-					      FTL_BLOCK_SIZE, NULL,
-					      SPDK_ENV_LCORE_ID_ANY,
-					      SPDK_MALLOC_DMA);
+		entry->payload = spdk_zmalloc(FTL_BLOCK_SIZE, FTL_BLOCK_SIZE, NULL,
+					      SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 		if (!entry->payload) {
 			goto ERROR;
 		}
@@ -853,10 +831,10 @@ void ftl_nv_cache_compact(struct spdk_ftl_dev *dev)
 		return;
 	}
 
-	if (_is_compaction_required(nv_cache)
-			&& !TAILQ_EMPTY(&nv_cache->compaction_list)) {
+	if (_is_compaction_required(nv_cache) &&
+	    !TAILQ_EMPTY(&nv_cache->compaction_list)) {
 		struct ftl_nv_cache_compaction *comp =
-				TAILQ_FIRST(&nv_cache->compaction_list);
+			TAILQ_FIRST(&nv_cache->compaction_list);
 
 		TAILQ_REMOVE(&nv_cache->compaction_list, comp, entry);
 
@@ -866,22 +844,19 @@ void ftl_nv_cache_compact(struct spdk_ftl_dev *dev)
 }
 
 int ftl_nv_cache_read(struct ftl_io *io, struct ftl_addr addr,
-		uint32_t num_blocks,
-		spdk_bdev_io_completion_cb cb, void *cb_arg)
+		      uint32_t num_blocks, spdk_bdev_io_completion_cb cb,
+		      void *cb_arg)
 {
 	int rc;
 	struct ftl_nv_cache *nv_cache = &io->dev->nv_cache;
 	struct ftl_io_channel *ioch =
-			ftl_io_channel_get_ctx(ftl_get_io_channel(io->dev));
+		ftl_io_channel_get_ctx(ftl_get_io_channel(io->dev));
 
 	assert(addr.cached);
 
-	rc = __spdk_bdev_read_blocks_with_md(nv_cache->bdev_desc,
-					   ioch->cache_ioch,
-					   ftl_io_iovec_addr(io),
-					   nv_cache->md_rd,
-					   addr.cache_offset, num_blocks,
-					   cb, cb_arg);
+	rc = __spdk_bdev_read_blocks_with_md(
+		     nv_cache->bdev_desc, ioch->cache_ioch, ftl_io_iovec_addr(io),
+		     nv_cache->md_rd, addr.cache_offset, num_blocks, cb, cb_arg);
 
 	if (spdk_likely(0 == rc)) {
 		ftl_io_inc_req(io);
@@ -891,25 +866,22 @@ int ftl_nv_cache_read(struct ftl_io *io, struct ftl_addr addr,
 }
 
 int ftl_nv_cache_write(struct ftl_io *io, struct ftl_addr addr,
-		uint32_t num_blocks,
-		void *md, spdk_bdev_io_completion_cb cb, void *cb_arg)
+		       uint32_t num_blocks, void *md,
+		       spdk_bdev_io_completion_cb cb, void *cb_arg)
 {
 	int rc;
 	struct ftl_nv_cache *nv_cache = &io->dev->nv_cache;
 	struct ftl_io_channel *ioch =
-			ftl_io_channel_get_ctx(ftl_get_io_channel(io->dev));
+		ftl_io_channel_get_ctx(ftl_get_io_channel(io->dev));
 
 	assert(addr.cached);
 
 	//trace cache write buffer
 	ftl_trace_submission(io->dev, io, addr, num_blocks);
 
-	rc = __spdk_bdev_write_blocks_with_md(nv_cache->bdev_desc,
-					   ioch->cache_ioch,
-					   ftl_io_iovec_addr(io),
-					   md,
-					   addr.cache_offset, num_blocks,
-					   cb, cb_arg);
+	rc = __spdk_bdev_write_blocks_with_md(
+		     nv_cache->bdev_desc, ioch->cache_ioch, ftl_io_iovec_addr(io), md,
+		     addr.cache_offset, num_blocks, cb, cb_arg);
 
 	if (spdk_likely(0 == rc)) {
 		ftl_io_inc_req(io);
@@ -918,8 +890,7 @@ int ftl_nv_cache_write(struct ftl_io *io, struct ftl_addr addr,
 	return rc;
 }
 
-void
-ftl_nv_cache_fill_md(struct ftl_io *io)
+void ftl_nv_cache_fill_md(struct ftl_io *io)
 {
 	struct spdk_bdev *bdev;
 	struct ftl_nv_cache *nv_cache = &io->dev->nv_cache;

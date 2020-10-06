@@ -160,7 +160,7 @@ SPDK_TRACE_REGISTER_FN(ftl_trace_func, "ftl", TRACE_GROUP_FTL)
 
 		snprintf(descbuf, sizeof(descbuf), "%c %s", source[i], "write_buffer_submit");
 		spdk_trace_register_description(descbuf, FTL_TRACE_WRITE_BUFFER_SUBMISSION(i),
-		             			OWNER_FTL, OBJECT_NONE, 0, 0, "addr: ");
+						OWNER_FTL, OBJECT_NONE, 0, 0, "addr: ");
 		snprintf(descbuf, sizeof(descbuf), "%c %s", source[i], "write_buffer_cmpl");
 		spdk_trace_register_description(descbuf, FTL_TRACE_WRITE_BUFFER_COMPLETION(i),
 						OWNER_FTL, OBJECT_NONE, 0, 0, "lba: ");
@@ -298,10 +298,11 @@ ftl_trace_completion(struct spdk_ftl_dev *dev, const struct ftl_io *io,
 			}
 			break;
 		case FTL_IO_WRITE:
-			if(completion == FTL_TRACE_COMPLETION_CACHE_SUBMITTION)
-			   tpoint_id = FTL_TRACE_WRITE_BUFFER_COMPLETION(source);
-			else
-			   tpoint_id = FTL_TRACE_WRITE_COMPLETION(source);
+			if (completion == FTL_TRACE_COMPLETION_CACHE_SUBMITTION) {
+				tpoint_id = FTL_TRACE_WRITE_BUFFER_COMPLETION(source);
+			} else {
+				tpoint_id = FTL_TRACE_WRITE_COMPLETION(source);
+			}
 			break;
 		case FTL_IO_ERASE:
 			tpoint_id = FTL_TRACE_ERASE_COMPLETION(source);
@@ -340,11 +341,12 @@ ftl_trace_submission(struct spdk_ftl_dev *dev, const struct ftl_io *io, struct f
 			tpoint_id = FTL_TRACE_READ_SUBMISSION(source);
 			break;
 		case FTL_IO_WRITE:
-			if(io->flags & FTL_IO_CACHE)
-			   tpoint_id = FTL_TRACE_WRITE_BUFFER_SUBMISSION(source);
-			else
-			   tpoint_id = FTL_TRACE_WRITE_SUBMISSION(source);
-			
+			if (io->flags & FTL_IO_CACHE) {
+				tpoint_id = FTL_TRACE_WRITE_BUFFER_SUBMISSION(source);
+			} else {
+				tpoint_id = FTL_TRACE_WRITE_SUBMISSION(source);
+			}
+
 			break;
 		case FTL_IO_ERASE:
 			tpoint_id = FTL_TRACE_ERASE_SUBMISSION(source);

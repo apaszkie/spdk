@@ -296,7 +296,7 @@ ftl_release_batch(struct spdk_ftl_dev *dev, struct ftl_batch *batch)
 static struct ftl_addr
 ftl_get_addr_from_entry(struct ftl_wbuf_entry *entry)
 {
-        struct ftl_io_channel *ioch = entry->ioch;
+	struct ftl_io_channel *ioch = entry->ioch;
 	struct ftl_addr addr = {};
 
 	addr.cached = 1;
@@ -1040,8 +1040,8 @@ ftl_shutdown_complete(struct spdk_ftl_dev *dev)
 	struct ftl_io_channel *ioch = ftl_io_channel_get_ctx(dev->ioch);
 
 	return !__atomic_load_n(&dev->num_inflight, __ATOMIC_SEQ_CST) &&
-		__atomic_load_n(&dev->num_io_channels, __ATOMIC_SEQ_CST) == 1
-		&& LIST_EMPTY(&dev->wptr_list) &&
+	       __atomic_load_n(&dev->num_io_channels, __ATOMIC_SEQ_CST) == 1
+	       && LIST_EMPTY(&dev->wptr_list) &&
 	       TAILQ_EMPTY(&ioch->retry_queue) &&
 	       !dev->nv_cache.compaction_active_count;
 }
@@ -1097,7 +1097,7 @@ ftl_read_canceled(int rc)
 
 static int
 ftl_read_next_logical_addr(struct ftl_io *io, struct ftl_addr *addr,
-		spdk_bdev_io_completion_cb cb, void *cb_arg)
+			   spdk_bdev_io_completion_cb cb, void *cb_arg)
 {
 	struct spdk_ftl_dev *dev = io->dev;
 	struct ftl_addr next_addr;
@@ -1154,7 +1154,7 @@ ftl_submit_read(struct ftl_io *io)
 			num_blocks = rc = ftl_read_next_physical_addr(io, &addr);
 		} else {
 			num_blocks = rc = ftl_read_next_logical_addr(io, &addr,
-					ftl_io_cmpl_cb, io);
+					  ftl_io_cmpl_cb, io);
 		}
 
 		/* We might need to retry the read from scratch (e.g. */
@@ -1301,7 +1301,7 @@ ftl_nv_cache_submit_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
 
 		//trace cache write completion
 		ftl_trace_completion(io->dev, io, FTL_TRACE_COMPLETION_CACHE_SUBMITTION);
-				
+
 
 		spdk_mempool_put(nv_cache->md_pool, io->md);
 		ftl_io_complete(io);
@@ -1319,10 +1319,10 @@ ftl_submit_nv_cache(void *ctx)
 	int rc;
 
 	rc = ftl_nv_cache_write(io, io->addr, io->num_blocks, io->md,
-			ftl_nv_cache_submit_cb, io);
+				ftl_nv_cache_submit_cb, io);
 	if (rc == -ENOMEM) {
 		spdk_thread_send_msg(ftl_get_core_thread(dev),
-				ftl_submit_nv_cache, io);
+				     ftl_submit_nv_cache, io);
 		return;
 	} else if (rc) {
 		SPDK_ERRLOG("Write to persistent cache failed: %s (%"PRIu64", %"PRIu64")\n",
@@ -1353,7 +1353,7 @@ _ftl_write_nv_cache(void *ctx)
 
 	/* Reserve area on the write buffer cache */
 	io->addr.cache_offset = ftl_nv_cache_get_wr_buffer(
-			&dev->nv_cache, io);
+					&dev->nv_cache, io);
 	io->addr.cached = true;
 	if (io->addr.offset == FTL_LBA_INVALID) {
 		thread = dev->core_thread;
@@ -2087,7 +2087,7 @@ ftl_io_read(struct ftl_io *io)
 		ftl_io_call_foreach_child(io, ftl_submit_read);
 	} else {
 		spdk_thread_send_msg(ftl_get_core_thread(io->dev),
-				_ftl_io_read, io);
+				     _ftl_io_read, io);
 	}
 }
 

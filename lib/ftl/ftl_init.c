@@ -1123,7 +1123,7 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 	int rc;
 
 	SPDK_NOTICELOG("FTL IO channel created on %s\n",
-			spdk_thread_get_name(spdk_get_thread()));
+		       spdk_thread_get_name(spdk_get_thread()));
 
 	num_io_channels = __atomic_fetch_add(&dev->num_io_channels, 1, __ATOMIC_SEQ_CST);
 	if (num_io_channels >= dev->conf.max_io_channels) {
@@ -1243,7 +1243,7 @@ _ftl_io_channel_destroy_cb(void *ctx)
 	uint32_t i;
 
 	SPDK_NOTICELOG("FTL IO channel destroy on %s\n",
-			spdk_thread_get_name(spdk_get_thread()));
+		       spdk_thread_get_name(spdk_get_thread()));
 
 	/* Do not destroy the channel if some of its entries are still in use */
 	if (spdk_ring_count(ioch->free_queue) != ioch->num_entries) {

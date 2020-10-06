@@ -131,12 +131,12 @@ void ftl_nv_cache_commit_wr_buffer(struct ftl_nv_cache *nv_cache,
 				   struct ftl_io *io);
 
 int ftl_nv_cache_read(struct ftl_io *io, struct ftl_addr addr,
-		uint32_t num_blocks,
-		spdk_bdev_io_completion_cb cb, void *cb_arg);
+		      uint32_t num_blocks,
+		      spdk_bdev_io_completion_cb cb, void *cb_arg);
 
 int ftl_nv_cache_write(struct ftl_io *io, struct ftl_addr addr,
-		uint32_t num_blocks,
-		void *md, spdk_bdev_io_completion_cb cb, void *cb_arg);
+		       uint32_t num_blocks,
+		       void *md, spdk_bdev_io_completion_cb cb, void *cb_arg);
 
 void ftl_nv_cache_compact(struct spdk_ftl_dev *dev);
 
