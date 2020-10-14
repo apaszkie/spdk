@@ -1039,11 +1039,31 @@ ftl_shutdown_complete(struct spdk_ftl_dev *dev)
 {
 	struct ftl_io_channel *ioch = ftl_io_channel_get_ctx(dev->ioch);
 
-	return !__atomic_load_n(&dev->num_inflight, __ATOMIC_SEQ_CST) &&
-	       __atomic_load_n(&dev->num_io_channels, __ATOMIC_SEQ_CST) == 1
-	       && LIST_EMPTY(&dev->wptr_list) &&
-	       TAILQ_EMPTY(&ioch->retry_queue) &&
-	       !dev->nv_cache.compaction_active_count;
+	if (__atomic_load_n(&dev->num_inflight, __ATOMIC_SEQ_CST)) {
+		return 0;
+	}
+
+	if (__atomic_load_n(&dev->num_io_channels, __ATOMIC_SEQ_CST) != 1) {
+		return 0;
+	}
+
+	if (!LIST_EMPTY(&dev->wptr_list)) {
+		return 0;
+	}
+
+	if (!TAILQ_EMPTY(&ioch->retry_queue)) {
+		return 0;
+	}
+
+	if (dev->nv_cache.compaction_active_count) {
+		return 0;
+	}
+
+	if (spdk_ring_count(ioch->free_queue) != ioch->num_entries) {
+		return 0;
+	}
+
+	return 1;
 }
 
 static int
@@ -1492,6 +1512,8 @@ ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
 
 	struct ftl_addr prev_addr;
 
+	assert(ftl_check_core_thread(dev));
+
 	prev_addr = ftl_l2p_get(dev, lba);
 	if (ftl_addr_invalid(prev_addr)) {
 		/* First time write */
@@ -1502,6 +1524,8 @@ ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
 	if (io_weak && !ftl_addr_cmp(prev_addr, weak_addr)) {
 		/* It's weak IO (GC IO or NV cache to NAND compaction,
 		 * but in the mean time a new user IO which had updated mapping */
+
+		assert(ftl_addr_cached(prev_addr));
 		return;
 	}
 
@@ -1756,7 +1780,7 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 		return 0;
 	}
 
-	if (dev->halt) {
+	if (dev->halt && TAILQ_EMPTY(&dev->pending_batches)) {
 		ftl_wptr_process_shutdown(wptr);
 	}
 
