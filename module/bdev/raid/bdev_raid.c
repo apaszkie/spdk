@@ -153,7 +153,9 @@ raid_bdev_create_cb(void *io_device, void *ctx_buf)
 
 	if (ret) {
 		for (; i > 0; --i) {
-			spdk_put_io_channel(raid_ch->base_channel[i]);
+			if (raid_ch->base_channel[i]) {
+				spdk_put_io_channel(raid_ch->base_channel[i]);
+			}
 		}
 		free(raid_ch->base_channel);
 		raid_ch->base_channel = NULL;
