@@ -585,60 +585,6 @@ ftl_init_fail(struct ftl_dev_init_ctx *init_ctx)
 	}
 }
 
-static void
-ftl_write_nv_cache_md_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
-{
-	struct ftl_dev_init_ctx *init_ctx = cb_arg;
-	struct spdk_ftl_dev *dev = init_ctx->dev;
-
-	spdk_bdev_free_io(bdev_io);
-	if (spdk_unlikely(!success)) {
-		SPDK_ERRLOG("Writing non-volatile cache's metadata header failed\n");
-		ftl_init_fail(init_ctx);
-		return;
-	}
-
-	dev->nv_cache.ready = true;
-	ftl_init_complete(init_ctx);
-}
-
-static void
-ftl_clear_nv_cache_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
-{
-	struct ftl_dev_init_ctx *init_ctx = cb_arg;
-	struct spdk_ftl_dev *dev = init_ctx->dev;
-	struct ftl_nv_cache *nv_cache = &dev->nv_cache;
-
-	spdk_bdev_free_io(bdev_io);
-	if (spdk_unlikely(!success)) {
-		SPDK_ERRLOG("Unable to clear the non-volatile cache bdev\n");
-		ftl_init_fail(init_ctx);
-		return;
-	}
-
-	nv_cache->phase = 1;
-	if (ftl_nv_cache_write_header(nv_cache, false, ftl_write_nv_cache_md_cb, init_ctx)) {
-		SPDK_ERRLOG("Unable to write non-volatile cache metadata header\n");
-		ftl_init_fail(init_ctx);
-	}
-}
-
-static void
-_ftl_nv_cache_scrub(void *ctx)
-{
-	struct ftl_dev_init_ctx *init_ctx = ctx;
-	struct spdk_ftl_dev *dev = init_ctx->dev;
-	int rc;
-
-	rc = ftl_nv_cache_scrub(&dev->nv_cache, ftl_clear_nv_cache_cb, init_ctx);
-
-	if (spdk_unlikely(rc != 0)) {
-		SPDK_ERRLOG("Unable to clear the non-volatile cache bdev: %s\n",
-			    spdk_strerror(-rc));
-		ftl_init_fail(init_ctx);
-	}
-}
-
 static int
 ftl_setup_initial_state(struct ftl_dev_init_ctx *init_ctx)
 {
@@ -668,24 +614,11 @@ ftl_setup_initial_state(struct ftl_dev_init_ctx *init_ctx)
 	if (!ftl_dev_has_nv_cache(dev)) {
 		ftl_init_complete(init_ctx);
 	} else {
-		spdk_thread_send_msg(ftl_get_core_thread(dev), _ftl_nv_cache_scrub, init_ctx);
+		/* TODO(mbarczak) Implement new scrub procedure */
+		SPDK_WARNLOG("NV Cache: Scrub procedure not implemented\n");
 	}
 
 	return 0;
-}
-
-static void
-ftl_restore_nv_cache_cb(struct ftl_restore *restore, int status, void *cb_arg)
-{
-	struct ftl_dev_init_ctx *init_ctx = cb_arg;
-
-	if (spdk_unlikely(status != 0)) {
-		SPDK_ERRLOG("Failed to restore the non-volatile cache state\n");
-		ftl_init_fail(init_ctx);
-		return;
-	}
-
-	ftl_init_complete(init_ctx);
 }
 
 static void
@@ -706,18 +639,12 @@ ftl_restore_device_cb(struct ftl_restore *restore, int status, void *cb_arg)
 		return;
 	}
 
-	/* TODO(mbarczak) Implement new recovery procedure due to new NV cache
-	 * implementation
-	 */
 	ftl_init_complete(init_ctx);
+
+	/* TODO(mbarczak) Implement new scrub procedure */
+	SPDK_WARNLOG("NV Cache: Restore procedure not implemented\n");
+
 	return;
-
-	if (!ftl_dev_has_nv_cache(dev)) {
-		ftl_init_complete(init_ctx);
-		return;
-	}
-
-	ftl_restore_nv_cache(restore, ftl_restore_nv_cache_cb, init_ctx);
 }
 
 struct l2p_restore {
@@ -1494,8 +1421,6 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 		}
 	}
 
-	spdk_dma_free(dev->nv_cache.dma_buf);
-
 	spdk_mempool_free(dev->lba_pool);
 	spdk_mempool_free(dev->nv_cache.md_pool);
 	spdk_mempool_free(dev->media_events_pool);
@@ -1694,23 +1619,6 @@ ftl_put_io_channel_cb(void *ctx)
 	ftl_io_channel_release_cb(ctx);
 }
 
-static void
-ftl_nv_cache_header_fini_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
-{
-	struct ftl_dev_init_ctx *fini_ctx = cb_arg;
-	struct spdk_ftl_dev *dev = fini_ctx->dev;
-	int rc = 0;
-
-	spdk_bdev_free_io(bdev_io);
-	if (spdk_unlikely(!success)) {
-		SPDK_ERRLOG("Failed to write non-volatile cache metadata header\n");
-		rc = -EIO;
-	}
-
-	fini_ctx->halt_complete_status = rc;
-	spdk_thread_send_msg(dev->core_thread, ftl_put_io_channel_cb, fini_ctx);
-}
-
 static int
 ftl_halt_poller(void *ctx)
 {
@@ -1724,8 +1632,8 @@ ftl_halt_poller(void *ctx)
 	spdk_poller_unregister(&fini_ctx->poller);
 
 	if (ftl_dev_has_nv_cache(dev)) {
-		ftl_nv_cache_write_header(&dev->nv_cache, true,
-					  ftl_nv_cache_header_fini_cb, fini_ctx);
+		/* TODO(mbarczak) Implement new write state procedure */
+		SPDK_WARNLOG("NV Cache: Save state procedure not implemented\n");
 	} else {
 		fini_ctx->halt_complete_status = 0;
 		spdk_thread_send_msg(dev->core_thread, ftl_put_io_channel_cb, fini_ctx);

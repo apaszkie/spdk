@@ -81,31 +81,24 @@ struct ftl_nv_cache_compaction {
 struct ftl_nv_cache {
 	/* FTL device */
 	struct spdk_ftl_dev *ftl_dev;
+
 	/* Write buffer cache bdev */
-	struct spdk_bdev_desc   *bdev_desc;
-	/* Write pointer */
-	uint64_t                current_addr;
-	/* Number of available blocks left */
-	uint64_t                num_available;
-	/* Maximum number of blocks */
-	uint64_t                num_data_blocks;
-	/*
-	 * Phase of the current cycle of writes. Each time whole cache area is filled, the phase is
-	 * advanced. Current phase is saved in every IO's metadata, as well as in the header saved
-	 * in the first sector. By looking at the phase of each block, it's possible to find the
-	 * oldest block and replay the order of the writes when recovering the data from the cache.
-	 */
-	unsigned int                phase;
-	/* Indicates that the data can be written to the cache */
-	bool                    ready;
+	struct spdk_bdev_desc *bdev_desc;
+
+	/* Flag indicating NV cache is read */
+	bool ready;
+
 	/* Metadata pool */
-	struct spdk_mempool         *md_pool;
+	struct spdk_mempool *md_pool;
+
 	/* Metadata place holder for user's reads */
 	void *md_rd;
-	/* DMA buffer for writing the header */
-	void                    *dma_buf;
 
+	/* Sum of block transfered from user to NV cache */
 	uint64_t load_blocks;
+
+	/* Maximum number of blocks */
+	uint64_t num_data_blocks;
 
 	struct ftl_nv_cache_chunk *chunk;
 	uint64_t chunk_count;

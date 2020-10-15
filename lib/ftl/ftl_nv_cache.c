@@ -248,16 +248,7 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 		return -1;
 	}
 
-	nv_cache->dma_buf =
-		spdk_dma_zmalloc(FTL_BLOCK_SIZE, spdk_bdev_get_buf_align(bdev), NULL);
-	if (!nv_cache->dma_buf) {
-		SPDK_ERRLOG("Memory allocation failure\n");
-		return -1;
-	}
-
-	nv_cache->current_addr = FTL_NV_CACHE_DATA_OFFSET;
 	nv_cache->num_data_blocks = spdk_bdev_get_num_blocks(bdev);
-	nv_cache->num_available = nv_cache->num_data_blocks;
 	nv_cache->ready = false;
 
 	vss = calloc(nv_cache->num_data_blocks, sizeof(vss[0]));

@@ -293,19 +293,6 @@ ftl_release_batch(struct spdk_ftl_dev *dev, struct ftl_batch *batch)
 	TAILQ_INSERT_TAIL(&dev->free_batches, batch, tailq);
 }
 
-static struct ftl_addr
-ftl_get_addr_from_entry(struct ftl_wbuf_entry *entry)
-{
-	struct ftl_io_channel *ioch = entry->ioch;
-	struct ftl_addr addr = {};
-
-	addr.cached = 1;
-	addr.cache_offset = (uint64_t)entry->index << ioch->dev->ioch_shift | ioch->index;
-
-	return addr;
-}
-
-
 static struct ftl_wbuf_entry *
 ftl_get_entry_from_addr(struct spdk_ftl_dev *dev, struct ftl_addr addr)
 {
@@ -411,7 +398,6 @@ static void
 ftl_md_write_cb(struct ftl_io *io, void *arg, int status)
 {
 	struct spdk_ftl_dev *dev = io->dev;
-	struct ftl_nv_cache *nv_cache = &dev->nv_cache;
 	struct ftl_band *band = io->band;
 	struct ftl_wptr *wptr;
 	size_t id;
@@ -426,14 +412,6 @@ ftl_md_write_cb(struct ftl_io *io, void *arg, int status)
 
 	ftl_band_set_next_state(band);
 	if (band->state == FTL_BAND_STATE_CLOSED) {
-		if (ftl_dev_has_nv_cache(dev)) {
-			nv_cache->num_available += ftl_band_user_blocks(band);
-
-			if (spdk_unlikely(nv_cache->num_available > nv_cache->num_data_blocks)) {
-				nv_cache->num_available = nv_cache->num_data_blocks;
-			}
-		}
-
 		/*
 		 * Go through the reloc_bitmap, checking for all the bands that had its data moved
 		 * onto current band and update their counters to allow them to be used for writing
@@ -1253,37 +1231,6 @@ ftl_process_flush(struct spdk_ftl_dev *dev, struct ftl_batch *batch)
 	}
 }
 
-static void
-ftl_nv_cache_wrap_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
-{
-	struct ftl_nv_cache *nv_cache = cb_arg;
-
-	if (!success) {
-		SPDK_ERRLOG("Unable to write non-volatile cache metadata header\n");
-		/* TODO: go into read-only mode */
-		assert(0);
-	}
-
-	nv_cache->ready = true;
-
-	spdk_bdev_free_io(bdev_io);
-}
-
-static struct ftl_io *
-ftl_alloc_io_nv_cache(struct ftl_io *parent, size_t num_blocks)
-{
-	struct ftl_io_init_opts opts = {
-		.dev		= parent->dev,
-		.parent		= parent,
-		.iovcnt		= 0,
-		.num_blocks	= num_blocks,
-		.flags		= parent->flags | FTL_IO_CACHE,
-		.ioch		= ftl_get_io_channel(parent->dev),
-	};
-
-	return ftl_io_init_internal(&opts);
-}
-
 static inline void
 ftl_update_nv_cache_l2p_update(struct ftl_io *io)
 {
@@ -1395,31 +1342,6 @@ ftl_write_nv_cache(struct ftl_io *io)
 	_ftl_write_nv_cache(io);
 
 	return 0;
-}
-
-int
-ftl_nv_cache_write_header(struct ftl_nv_cache *nv_cache, bool shutdown,
-			  spdk_bdev_io_completion_cb cb_fn, void *cb_arg)
-{
-	struct spdk_ftl_dev *dev = SPDK_CONTAINEROF(nv_cache, struct spdk_ftl_dev, nv_cache);
-	struct ftl_nv_cache_header *hdr = nv_cache->dma_buf;
-	struct spdk_bdev *bdev;
-	struct ftl_io_channel *ioch;
-
-	bdev = spdk_bdev_desc_get_bdev(nv_cache->bdev_desc);
-	ioch = ftl_io_channel_get_ctx(ftl_get_io_channel(dev));
-
-	memset(hdr, 0, spdk_bdev_get_block_size(bdev));
-
-	hdr->phase = (uint8_t)nv_cache->phase;
-	hdr->size = spdk_bdev_get_num_blocks(bdev);
-	hdr->uuid = dev->uuid;
-	hdr->version = FTL_NV_CACHE_HEADER_VERSION;
-	hdr->current_addr = shutdown ? nv_cache->current_addr : FTL_LBA_INVALID;
-	hdr->checksum = spdk_crc32c_update(hdr, offsetof(struct ftl_nv_cache_header, checksum), 0);
-
-	return spdk_bdev_write_blocks(nv_cache->bdev_desc, ioch->cache_ioch, hdr, 0, 1,
-				      cb_fn, cb_arg);
 }
 
 int
