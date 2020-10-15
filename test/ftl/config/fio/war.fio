@@ -5,7 +5,7 @@ filename=${FTL_BDEV_NAME}
 spdk_core_mask=f
 thread=1
 direct=1
-random_distribution=uniform
+random_distribution=random
 norandommap
 buffered=0
 group_reporting
