@@ -12,7 +12,7 @@ buffered=0
 size=100%
 time_based
 norandommap
-scramble_buffers=true
+scramble_buffers=1
 group_reporting
 random_distribution=random
 
