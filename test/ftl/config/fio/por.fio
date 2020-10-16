@@ -19,6 +19,7 @@ random_distribution=random
 [POR]
 bs=4k
 numjobs=4
-rw=randwrite
+rw=randrw
+rwmixread=70
 iodepth=64
 runtime=3600s
