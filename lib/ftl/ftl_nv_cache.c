@@ -39,7 +39,14 @@
 #include "spdk/ftl.h"
 #include "spdk/log.h"
 
-#define FTL_NV_CACHE_CHUNK_SIZE_BYTES (256 * (1ULL << 10))
+#define FTL_NV_CACHE_CHUNK_DATA_SIZE (256 * (1ULL << 10))
+#define FTL_NV_CACHE_CHUNK_META_SIZE 64ULL
+#define FTL_NV_CACHE_CHUNK_SIZE \
+	(FTL_NV_CACHE_CHUNK_DATA_SIZE + FTL_NV_CACHE_CHUNK_META_SIZE)
+
+SPDK_STATIC_ASSERT(
+	sizeof(struct ftl_nv_cache_chunk) <= FTL_NV_CACHE_CHUNK_META_SIZE,
+	"FTL NV Chunk metadata struct too big");
 
 static struct ftl_nv_cache_compaction *compaction_alloc(
 	struct spdk_ftl_dev *dev);
@@ -159,7 +166,7 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 	struct spdk_ftl_conf *conf = &dev->conf;
 	char pool_name[128];
 	int rc;
-	uint64_t i;
+	uint64_t i, blocks, offset;
 
 	if (!bdev_name) {
 		return 0;
@@ -233,9 +240,10 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 		return -1;
 	}
 
+	nv_cache->md_size = __spdk_bdev_get_md_size(bdev);
 	nv_cache->md_pool = spdk_mempool_create(
 				    pool_name, conf->nv_cache.max_request_cnt * 2,
-				    __spdk_bdev_get_md_size(bdev) * conf->nv_cache.max_request_size,
+				    nv_cache->md_size * conf->nv_cache.max_request_size,
 				    SPDK_MEMPOOL_DEFAULT_CACHE_SIZE, SPDK_ENV_SOCKET_ID_ANY);
 	if (!nv_cache->md_pool) {
 		SPDK_ERRLOG("Failed to initialize non-volatile cache metadata pool\n");
@@ -248,31 +256,54 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 		return -1;
 	}
 
-	nv_cache->num_data_blocks = spdk_bdev_get_num_blocks(bdev);
+	/*
+	 * Calculate chunk size
+	 */
+	nv_cache->chunk_size = FTL_NV_CACHE_CHUNK_DATA_SIZE / FTL_BLOCK_SIZE;
+
+	/*
+	 * Calculate number of chunks
+	 */
+	blocks = spdk_bdev_get_num_blocks(bdev);
+	nv_cache->chunk_count = (blocks * FTL_BLOCK_SIZE) /
+			FTL_NV_CACHE_CHUNK_SIZE;
+	nv_cache->num_data_blocks =  nv_cache->chunk_count *
+			nv_cache->chunk_size;
+
+	/*
+	 * Calculate number of blocks for NV cache super block
+	 */
+	nv_cache->num_meta_blocks = blocks - nv_cache->num_data_blocks;
+
 	nv_cache->ready = false;
 
-	vss = calloc(nv_cache->num_data_blocks, sizeof(vss[0]));
-	for (i = 0; i < nv_cache->num_data_blocks; i++) {
+	vss = calloc(blocks, sizeof(vss[0]));
+	for (i = 0; i < blocks; i++) {
 		vss[i].lba = FTL_LBA_INVALID;
 	}
-	vss_size = nv_cache->num_data_blocks;
+	vss_size = blocks;
 	vss_md_size = __spdk_bdev_get_md_size(bdev);
 
 	TAILQ_INIT(&nv_cache->chunk_free_list);
 	TAILQ_INIT(&nv_cache->chunk_full_list);
 
-	nv_cache->chunk_size = FTL_NV_CACHE_CHUNK_SIZE_BYTES / FTL_BLOCK_SIZE;
-	nv_cache->chunk_count = spdk_bdev_get_num_blocks(bdev) / nv_cache->chunk_size;
-	nv_cache->chunk = calloc(nv_cache->chunk_count, sizeof(nv_cache->chunk[0]));
+	/* Allocate memory for chunks with alligment to block */
+
+	nv_cache->chunk = calloc(nv_cache->num_meta_blocks, FTL_BLOCK_SIZE);
+	assert(nv_cache->num_meta_blocks * FTL_BLOCK_SIZE >=
+			nv_cache->chunk_count * sizeof(nv_cache->chunk[i]));
 	nv_cache->chunk_free_count = nv_cache->chunk_count;
 	if (!nv_cache->chunk) {
 		SPDK_ERRLOG("Cannot allocate memory for chunks\n");
 		return -1;
 	}
+
+	offset = nv_cache->num_meta_blocks;
 	for (i = 0; i < nv_cache->chunk_count; i++) {
 		struct ftl_nv_cache_chunk *chunk = &nv_cache->chunk[i];
 
-		chunk->offset = i * nv_cache->chunk_size;
+		chunk->offset = offset;
+		offset += nv_cache->chunk_size;
 		TAILQ_INSERT_TAIL(&nv_cache->chunk_free_list, chunk, entry);
 	}
 
@@ -290,6 +321,11 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 		TAILQ_INSERT_TAIL(&nv_cache->compaction_list, compact, entry);
 	}
 
+	/*
+	 * TODO(mbarczak) Check if end of NV cache superblock does not cross
+	 * the device write boundary
+	 */
+
 	return 0;
 }
 
@@ -305,7 +341,7 @@ static bool _is_compaction_required(struct ftl_nv_cache *nv_cache)
 
 	uint64_t compacted_load_blocks =
 		nv_cache->compaction_active_count *
-		(FTL_NV_CACHE_CHUNK_SIZE_BYTES / FTL_BLOCK_SIZE);
+		(FTL_NV_CACHE_CHUNK_DATA_SIZE / FTL_BLOCK_SIZE);
 
 	if (compacted_load_blocks > nv_cache->load_blocks) {
 		return false;
@@ -897,4 +933,111 @@ void ftl_nv_cache_fill_md(struct ftl_io *io)
 		ftl_nv_cache_pack_lba(ftl_io_get_lba(io, block_off), md_buf);
 		md_buf += meta_size;
 	}
+}
+
+struct save_state_context {
+	struct ftl_nv_cache *nv_cache;
+	void (*cb)(void *cntx, bool status);
+	void *cb_cntx;
+	bool status;
+	uint64_t iter;
+	void *iter_data;
+	void *meta;
+	void *data;
+};
+
+static void save_state_iter(struct save_state_context *cntx);
+
+static void save_state_finish(struct save_state_context *cntx)
+{
+	if (cntx->status) {
+		SPDK_NOTICELOG("FTL NV Cache: state saved successfully\n");
+	} else {
+		SPDK_ERRLOG("FTL NV Cache: state saving ERROR\n");
+	}
+
+	cntx->cb(cntx->cb_cntx, cntx->status);
+
+	spdk_free(cntx->data);
+	spdk_mempool_put(cntx->nv_cache->md_pool, cntx->meta);
+	free(cntx);
+}
+
+static void save_state_cb(struct spdk_bdev_io *bdev_io, bool success, void *arg)
+{
+	struct save_state_context *cntx = arg;
+
+	spdk_bdev_free_io(bdev_io);
+
+	if (!success) {
+		save_state_finish(cntx);
+		return;
+	}
+
+	cntx->iter++;
+	cntx->iter_data += FTL_BLOCK_SIZE;
+	cntx->status &= success;
+
+	save_state_iter(cntx);
+}
+
+static void save_state_iter(struct save_state_context *cntx)
+{
+	struct ftl_nv_cache *nv_cache = cntx->nv_cache;
+	struct ftl_io_channel *ioch =
+		ftl_io_channel_get_ctx(ftl_get_io_channel(nv_cache->ftl_dev));
+	int rc;
+
+	if (cntx->iter < nv_cache->num_meta_blocks) {
+		memcpy(cntx->data, cntx->iter_data, FTL_BLOCK_SIZE);
+
+		rc = __spdk_bdev_write_blocks_with_md(
+			     nv_cache->bdev_desc, ioch->cache_ioch,
+			     cntx->data, cntx->meta,
+			     cntx->iter, 1, save_state_cb, cntx);
+
+		if (rc) {
+			save_state_finish(cntx);
+			return;
+		}
+	} else {
+		save_state_finish(cntx);
+	}
+}
+
+void ftl_nv_cache_save_state(struct ftl_nv_cache *nv_cache,
+		void (*cb)(void *cntx, bool status), void *cb_cntx)
+{
+	SPDK_NOTICELOG("FTL NV Cache: Saving state...\n");
+
+	struct save_state_context *cntx = calloc(1, sizeof(*cntx));
+	if (!cntx) {
+		cb(cb_cntx, false);
+		return;
+	}
+
+	cntx->nv_cache = nv_cache;
+	cntx->cb = cb;
+	cntx->cb_cntx = cb_cntx;
+	cntx->iter_data = nv_cache->chunk;
+	cntx->status = true;
+
+	cntx->meta = spdk_mempool_get(nv_cache->md_pool);
+	if (!cntx->meta) {
+		free(cntx);
+		cb(cb_cntx, false);
+		return;
+	}
+	memset(cntx->meta, 0, nv_cache->md_size);
+
+	cntx->data = spdk_zmalloc(FTL_BLOCK_SIZE, FTL_BLOCK_SIZE, NULL,
+			SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
+	if (!cntx->data) {
+		spdk_mempool_put(nv_cache->md_pool, cntx->meta);
+		free(cntx);
+		cb(cb_cntx, false);
+		return;
+	}
+
+	save_state_iter(cntx);
 }

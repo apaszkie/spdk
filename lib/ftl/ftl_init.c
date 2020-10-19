@@ -611,13 +611,12 @@ ftl_setup_initial_state(struct ftl_dev_init_ctx *init_ctx)
 		return -1;
 	}
 
-	if (!ftl_dev_has_nv_cache(dev)) {
-		ftl_init_complete(init_ctx);
-	} else {
+	if (ftl_dev_has_nv_cache(dev)) {
 		/* TODO(mbarczak) Implement new scrub procedure */
 		SPDK_WARNLOG("NV Cache: Scrub procedure not implemented\n");
 	}
 
+	ftl_init_complete(init_ctx);
 	return 0;
 }
 
@@ -1619,6 +1618,22 @@ ftl_put_io_channel_cb(void *ctx)
 	ftl_io_channel_release_cb(ctx);
 }
 
+static void
+ftl_nv_cache_save_state_cb(void *cntx, bool success)
+{
+	struct ftl_dev_init_ctx *fini_ctx = cntx;
+	struct spdk_ftl_dev *dev = fini_ctx->dev;
+	int rc = 0;
+
+	if (spdk_unlikely(!success)) {
+		SPDK_ERRLOG("Failed to write non-volatile cache metadata header\n");
+		rc = -EIO;
+	}
+
+	fini_ctx->halt_complete_status = rc;
+	spdk_thread_send_msg(dev->core_thread, ftl_put_io_channel_cb, fini_ctx);
+}
+
 static int
 ftl_halt_poller(void *ctx)
 {
@@ -1632,11 +1647,12 @@ ftl_halt_poller(void *ctx)
 	spdk_poller_unregister(&fini_ctx->poller);
 
 	if (ftl_dev_has_nv_cache(dev)) {
-		/* TODO(mbarczak) Implement new write state procedure */
-		SPDK_WARNLOG("NV Cache: Save state procedure not implemented\n");
+		ftl_nv_cache_save_state(&dev->nv_cache,
+				ftl_nv_cache_save_state_cb, fini_ctx);
 	} else {
 		fini_ctx->halt_complete_status = 0;
-		spdk_thread_send_msg(dev->core_thread, ftl_put_io_channel_cb, fini_ctx);
+		spdk_thread_send_msg(dev->core_thread, ftl_put_io_channel_cb,
+				fini_ctx);
 	}
 
 	return SPDK_POLLER_BUSY;

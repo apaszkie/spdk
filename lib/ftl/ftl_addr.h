@@ -41,7 +41,7 @@
 /* Marks LBA as invalid */
 #define FTL_LBA_INVALID		((uint64_t)-1)
 /* Smallest data unit size */
-#define FTL_BLOCK_SIZE		4096
+#define FTL_BLOCK_SIZE		4096ULL
 
 /* This structure represents on-disk address. It can have one of the following */
 /* formats: */

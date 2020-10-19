@@ -94,11 +94,17 @@ struct ftl_nv_cache {
 	/* Metadata place holder for user's reads */
 	void *md_rd;
 
+	/* Block Metadata size */
+	uint64_t md_size;
+
 	/* Sum of block transfered from user to NV cache */
 	uint64_t load_blocks;
 
-	/* Maximum number of blocks */
+	/* Number of data blocks */
 	uint64_t num_data_blocks;
+
+	/* Number of data blocks */
+	uint64_t num_meta_blocks;
 
 	struct ftl_nv_cache_chunk *chunk;
 	uint64_t chunk_count;
@@ -149,5 +155,7 @@ ftl_nv_cache_unpack_lba(void *md_buf)
 
 void ftl_nv_cache_fill_md(struct ftl_io *io);
 
+void ftl_nv_cache_save_state(struct ftl_nv_cache *nv_cache,
+		void (*cb)(void *cntx, bool status), void *cntx);
 
 #endif  /* LIB_FTL_FTL_NV_CACHE_H_ */
