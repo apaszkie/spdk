@@ -5,6 +5,7 @@ filename=${FTL_BDEV_NAME}
 spdk_core_mask=f
 thread=1
 direct=1
+randrepeat=0
 random_distribution=random
 norandommap
 buffered=0
