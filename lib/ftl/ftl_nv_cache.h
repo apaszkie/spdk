@@ -118,6 +118,10 @@ struct ftl_nv_cache {
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_full_list;
 	TAILQ_HEAD(, ftl_nv_cache_compaction) compaction_list;
 	uint64_t compaction_active_count;
+
+	struct ftl_nv_cache_block_metadata *vss;
+	int64_t vss_size;
+	int64_t vss_md_size;
 };
 
 int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name);
