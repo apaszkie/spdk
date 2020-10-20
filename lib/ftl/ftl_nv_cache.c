@@ -392,6 +392,8 @@ static struct ftl_nv_cache_chunk *get_chunk_for_compaction(
 	if (!TAILQ_EMPTY(&nv_cache->chunk_full_list)) {
 		chunk = TAILQ_FIRST(&nv_cache->chunk_full_list);
 		TAILQ_REMOVE(&nv_cache->chunk_full_list, chunk, entry);
+
+		assert(chunk->write_pointer);
 	} else {
 		assert(0);
 	}
@@ -935,7 +937,7 @@ void ftl_nv_cache_fill_md(struct ftl_io *io)
 	}
 }
 
-struct save_state_context {
+struct state_context {
 	struct ftl_nv_cache *nv_cache;
 	void (*cb)(void *cntx, bool status);
 	void *cb_cntx;
@@ -943,45 +945,87 @@ struct save_state_context {
 	uint64_t iter;
 	void *iter_data;
 	void *meta;
-	void *data;
+	void *dma_data;
 };
 
-static void save_state_iter(struct save_state_context *cntx);
+static void state_context_free(struct state_context *cntx)
+{
+	if (cntx) {
+		if (cntx->dma_data) {
+			spdk_free(cntx->dma_data);
+		}
 
-static void save_state_finish(struct save_state_context *cntx)
+		if (cntx->meta) {
+			spdk_mempool_put(cntx->nv_cache->md_pool, cntx->meta);
+		}
+
+		free(cntx);
+	}
+}
+
+static struct state_context* state_context_allocate(struct ftl_nv_cache *nv_cache,
+		void (*cb)(void *cntx, bool status), void *cb_cntx)
+{
+	struct state_context *cntx = calloc(1, sizeof(*cntx));
+
+	if (!cntx) {
+		return NULL;
+	}
+
+	cntx->nv_cache = nv_cache;
+	cntx->cb = cb;
+	cntx->cb_cntx = cb_cntx;
+	cntx->iter_data = nv_cache->chunk;
+	cntx->status = true;
+
+	cntx->meta = spdk_mempool_get(nv_cache->md_pool);
+	if (!cntx->meta) {
+		state_context_free(cntx);
+		return NULL;
+	}
+	memset(cntx->meta, 0, nv_cache->md_size);
+
+	cntx->dma_data = spdk_zmalloc(FTL_BLOCK_SIZE, FTL_BLOCK_SIZE, NULL,
+			SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
+	if (!cntx->dma_data) {
+		state_context_free(cntx);
+		return NULL;
+	}
+
+	return cntx;
+}
+
+static void save_state_iter(struct state_context *cntx);
+
+static void save_state_finish(struct state_context *cntx)
 {
 	if (cntx->status) {
 		SPDK_NOTICELOG("FTL NV Cache: state saved successfully\n");
 	} else {
 		SPDK_ERRLOG("FTL NV Cache: state saving ERROR\n");
 	}
-
 	cntx->cb(cntx->cb_cntx, cntx->status);
-
-	spdk_free(cntx->data);
-	spdk_mempool_put(cntx->nv_cache->md_pool, cntx->meta);
-	free(cntx);
+	state_context_free(cntx);
 }
 
 static void save_state_cb(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 {
-	struct save_state_context *cntx = arg;
+	struct state_context *cntx = arg;
 
 	spdk_bdev_free_io(bdev_io);
 
-	if (!success) {
+	cntx->status &= success;
+	if (!cntx->status) {
 		save_state_finish(cntx);
 		return;
 	}
 
 	cntx->iter++;
 	cntx->iter_data += FTL_BLOCK_SIZE;
-	cntx->status &= success;
-
 	save_state_iter(cntx);
 }
 
-static void save_state_iter(struct save_state_context *cntx)
+static void save_state_iter(struct state_context *cntx)
 {
 	struct ftl_nv_cache *nv_cache = cntx->nv_cache;
 	struct ftl_io_channel *ioch =
@@ -989,11 +1033,11 @@ static void save_state_iter(struct save_state_context *cntx)
 	int rc;
 
 	if (cntx->iter < nv_cache->num_meta_blocks) {
-		memcpy(cntx->data, cntx->iter_data, FTL_BLOCK_SIZE);
+		memcpy(cntx->dma_data, cntx->iter_data, FTL_BLOCK_SIZE);
 
 		rc = __spdk_bdev_write_blocks_with_md(
 			     nv_cache->bdev_desc, ioch->cache_ioch,
-			     cntx->data, cntx->meta,
+			     cntx->dma_data, cntx->meta,
 			     cntx->iter, 1, save_state_cb, cntx);
 
 		if (rc) {
@@ -1008,36 +1052,189 @@ static void save_state_iter(struct save_state_context *cntx)
 void ftl_nv_cache_save_state(struct ftl_nv_cache *nv_cache,
 		void (*cb)(void *cntx, bool status), void *cb_cntx)
 {
+	bool status = true;
+	uint64_t i;
+
+	struct state_context *cntx;
 	SPDK_NOTICELOG("FTL NV Cache: Saving state...\n");
 
-	struct save_state_context *cntx = calloc(1, sizeof(*cntx));
+	if (nv_cache->compaction_active_count) {
+		/* All compaction process have to be inactive */
+		assert(0);
+		cb(cb_cntx, false);
+		return;
+	}
+
+	/* Iterate over chunks and check if they are in consistent state */
+	for (i = 0; i < nv_cache->chunk_count; i++) {
+		struct ftl_nv_cache_chunk *chunk = &nv_cache->chunk[i];
+
+		if (chunk->read_pointer)  {
+			/* Only full chunks can be compacted */
+			if(chunk->blocks_written != nv_cache->chunk_size) {
+				assert(0);
+				status = false;
+				break;
+			}
+
+			/*
+			 * Chunk in the middle of compaction, start over after
+			 * load
+			 */
+			chunk->read_pointer = chunk->blocks_compacted = 0;
+		} else if (chunk->blocks_written == nv_cache->chunk_size) {
+			/* Full chunk */
+		} else if (chunk->blocks_written && nv_cache->chunk_current == chunk) {
+			/* Current chunk */
+		} else if (0 == chunk->blocks_written) {
+			/* Empty chunk */
+		} else {
+			assert(0);
+			status = false;
+			break;
+		}
+	}
+
+	if (!status) {
+		cb(cb_cntx, false);
+		return;
+	}
+
+	cntx = state_context_allocate(nv_cache, cb, cb_cntx);
 	if (!cntx) {
-		cb(cb_cntx, false);
-		return;
-	}
-
-	cntx->nv_cache = nv_cache;
-	cntx->cb = cb;
-	cntx->cb_cntx = cb_cntx;
-	cntx->iter_data = nv_cache->chunk;
-	cntx->status = true;
-
-	cntx->meta = spdk_mempool_get(nv_cache->md_pool);
-	if (!cntx->meta) {
-		free(cntx);
-		cb(cb_cntx, false);
-		return;
-	}
-	memset(cntx->meta, 0, nv_cache->md_size);
-
-	cntx->data = spdk_zmalloc(FTL_BLOCK_SIZE, FTL_BLOCK_SIZE, NULL,
-			SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-	if (!cntx->data) {
-		spdk_mempool_put(nv_cache->md_pool, cntx->meta);
-		free(cntx);
-		cb(cb_cntx, false);
+		cntx->status = false;
+		save_state_finish(cntx);
 		return;
 	}
 
 	save_state_iter(cntx);
+}
+
+static void load_state_finish(struct state_context *arg)
+{
+	uint64_t chunks_number, offset;
+	struct state_context *cntx = arg;
+	struct ftl_nv_cache *nv_cache = cntx->nv_cache;
+	uint64_t i;
+
+	if (!cntx->status) {
+		SPDK_ERRLOG("FTL NV Cache: loading state ERROR\n");
+		cntx->cb(cntx->cb_cntx, cntx->status);
+		state_context_free(cntx);
+		return;
+	}
+
+	nv_cache->chunk_current = NULL;
+	TAILQ_INIT(&nv_cache->chunk_free_list);
+	TAILQ_INIT(&nv_cache->chunk_full_list);
+	nv_cache->chunk_full_count = nv_cache->chunk_free_count = 0;
+
+	offset = nv_cache->num_meta_blocks;
+	for (i = 0; i < nv_cache->chunk_count; i++) {
+		struct ftl_nv_cache_chunk *chunk = &nv_cache->chunk[i];
+
+		if (offset != chunk->offset) {
+			cntx->status = false;
+			assert(0);
+			break;
+		}
+
+		if (chunk->blocks_written == nv_cache->chunk_size) {
+			/* Chunk full, move it on full list */
+			TAILQ_INSERT_TAIL(&nv_cache->chunk_full_list, chunk, entry);
+			nv_cache->chunk_full_count++;
+		} else if (chunk->blocks_written && !nv_cache->chunk_current) {
+			nv_cache->chunk_current = chunk;
+		} else if (0 == chunk->blocks_written) {
+			/* Chunk empty, move it on empty list */
+			TAILQ_INSERT_TAIL(&nv_cache->chunk_free_list, chunk, entry);
+			nv_cache->chunk_free_count++;
+		} else {
+			cntx->status = false;
+			assert(0);
+			break;
+		}
+
+		offset += nv_cache->chunk_size;
+	}
+
+	chunks_number = nv_cache->chunk_free_count + nv_cache->chunk_full_count;
+	if (nv_cache->chunk_current) {
+		chunks_number++;
+	}
+
+	if (chunks_number != nv_cache->chunk_count) {
+		cntx->status = false;
+		assert(0);
+	}
+
+	if (cntx->status) {
+		SPDK_NOTICELOG("FTL NV Cache: state loaded successfully\n");
+	} else {
+		SPDK_ERRLOG("FTL NV Cache: loading state ERROR\n");
+	}
+
+	cntx->cb(cntx->cb_cntx, cntx->status);
+	state_context_free(cntx);
+}
+
+static void load_state_iter(struct state_context *cntx);
+
+static void load_state_cb(struct spdk_bdev_io *bdev_io, bool success, void *arg)
+{
+	struct state_context *cntx = arg;
+
+	spdk_bdev_free_io(bdev_io);
+
+	cntx->status &= success;
+	if (!success) {
+		load_state_finish(cntx);
+		return;
+	}
+
+	memcpy(cntx->iter_data, cntx->dma_data, FTL_BLOCK_SIZE);
+
+	cntx->iter++;
+	cntx->iter_data += FTL_BLOCK_SIZE;
+
+	load_state_iter(cntx);
+}
+
+static void load_state_iter(struct state_context *cntx)
+{
+	struct ftl_nv_cache *nv_cache = cntx->nv_cache;
+	struct ftl_io_channel *ioch =
+		ftl_io_channel_get_ctx(ftl_get_io_channel(nv_cache->ftl_dev));
+	int rc;
+
+	if (cntx->iter < nv_cache->num_meta_blocks) {
+		rc = __spdk_bdev_read_blocks_with_md(
+			     nv_cache->bdev_desc, ioch->cache_ioch,
+			     cntx->dma_data, cntx->meta,
+			     cntx->iter, 1, load_state_cb, cntx);
+
+		if (rc) {
+			load_state_finish(cntx);
+			return;
+		}
+	} else {
+		load_state_finish(cntx);
+	}
+}
+
+
+void ftl_nv_cache_load_state(struct ftl_nv_cache *nv_cache,
+		void (*cb)(void *cntx, bool status), void *cb_cntx)
+{
+	struct state_context *cntx;
+	SPDK_NOTICELOG("FTL NV Cache: Loading state...\n");
+
+	cntx = state_context_allocate(nv_cache, cb, cb_cntx);
+	if (!cntx) {
+		cntx->status = false;
+		load_state_finish(cntx);
+		return;
+	}
+
+	load_state_iter(cntx);
 }

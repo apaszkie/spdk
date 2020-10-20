@@ -156,6 +156,9 @@ ftl_nv_cache_unpack_lba(void *md_buf)
 void ftl_nv_cache_fill_md(struct ftl_io *io);
 
 void ftl_nv_cache_save_state(struct ftl_nv_cache *nv_cache,
-		void (*cb)(void *cntx, bool status), void *cntx);
+		void (*cb)(void *cntx, bool status), void *cb_cntx);
+
+void ftl_nv_cache_load_state(struct ftl_nv_cache *nv_cache,
+		void (*cb)(void *cntx, bool status), void *cb_cntx);
 
 #endif  /* LIB_FTL_FTL_NV_CACHE_H_ */

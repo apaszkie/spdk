@@ -621,6 +621,18 @@ ftl_setup_initial_state(struct ftl_dev_init_ctx *init_ctx)
 }
 
 static void
+ftl_restore_nv_cache_cb(void *cntx, bool status)
+{
+	struct ftl_dev_init_ctx *init_ctx = cntx;
+
+	if (status) {
+		ftl_init_complete(init_ctx);
+	} else {
+		ftl_init_fail(init_ctx);
+	}
+}
+
+static void
 ftl_restore_device_cb(struct ftl_restore *restore, int status, void *cb_arg)
 {
 	struct ftl_dev_init_ctx *init_ctx = cb_arg;
@@ -638,12 +650,12 @@ ftl_restore_device_cb(struct ftl_restore *restore, int status, void *cb_arg)
 		return;
 	}
 
-	ftl_init_complete(init_ctx);
-
-	/* TODO(mbarczak) Implement new scrub procedure */
-	SPDK_WARNLOG("NV Cache: Restore procedure not implemented\n");
-
-	return;
+	if (ftl_dev_has_nv_cache(dev)) {
+		ftl_nv_cache_load_state(&dev->nv_cache,
+					ftl_restore_nv_cache_cb, init_ctx);
+	} else {
+		ftl_init_complete(init_ctx);
+	}
 }
 
 struct l2p_restore {
