@@ -83,6 +83,26 @@ static struct ftl_nv_cache_block_metadata *vss;
 static int64_t vss_size;
 static int64_t vss_md_size;
 
+static void __load_vss(struct spdk_ftl_dev *dev,
+		struct ftl_nv_cache_block_metadata *vss,
+		int64_t vss_size, int64_t vss_md_size)
+{
+	uint64_t i;
+
+	for (i = 0; i < dev->num_lbas; i++) {
+		struct ftl_addr addr = ftl_l2p_get(dev, i);
+
+		if (addr.offset == FTL_ADDR_INVALID) {
+			continue;
+		}
+
+		if (addr.cached) {
+			assert(addr.cache_offset < vss_size);
+			vss[addr.cache_offset].lba = i;
+		}
+	}
+}
+
 static int __spdk_bdev_read_blocks_with_md(
 	struct spdk_bdev_desc *desc, struct spdk_io_channel *ch, void *buf,
 	void *md_buf, int64_t offset_blocks, uint64_t num_blocks,
@@ -1167,6 +1187,11 @@ static void load_state_finish(struct state_context *arg)
 		cntx->status = false;
 		assert(0);
 	}
+
+	SPDK_NOTICELOG("FTL NV Cache: full chunks = %lu , empty chunks = %lu\n",
+			nv_cache->chunk_full_count, nv_cache->chunk_free_count);
+
+	__load_vss(nv_cache->ftl_dev, vss, vss_size, vss_md_size);
 
 	if (cntx->status) {
 		SPDK_NOTICELOG("FTL NV Cache: state loaded successfully\n");
