@@ -37,7 +37,7 @@
 #include "spdk/stdinc.h"
 
 /* Marks address as invalid */
-#define FTL_ADDR_INVALID	(-1)
+#define FTL_ADDR_INVALID	((uint64_t)-1)
 /* Marks LBA as invalid */
 #define FTL_LBA_INVALID		((uint64_t)-1)
 /* Smallest data unit size */

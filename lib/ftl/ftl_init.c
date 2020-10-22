@@ -484,13 +484,18 @@ ftl_dev_l2p_alloc_pmem(struct spdk_ftl_dev *dev, size_t l2p_size, const char *l2
 static int
 ftl_dev_l2p_alloc_dram(struct spdk_ftl_dev *dev, size_t l2p_size)
 {
+	uint64_t i;
+	struct ftl_addr invalid_addr = { .offset = FTL_ADDR_INVALID };
+
 	dev->l2p = malloc(l2p_size);
 	if (!dev->l2p) {
 		SPDK_ERRLOG("Failed to allocate l2p table\n");
 		return -1;
 	}
 
-	memset(dev->l2p, FTL_ADDR_INVALID, l2p_size);
+	for (i = 0; i < dev->num_lbas; i++) {
+		ftl_l2p_set(dev, i, invalid_addr);
+	}
 
 	return 0;
 }

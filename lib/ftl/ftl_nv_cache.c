@@ -1,3 +1,4 @@
+
 /*-
  *   BSD LICENSE
  *
@@ -79,10 +80,6 @@ static void compaction_entry_clear_valid(struct ftl_wbuf_entry *entry)
 	entry->io_flags &= ~FTL_IO_NV_CACHE_COMPACT;
 }
 
-static struct ftl_nv_cache_block_metadata *vss;
-static int64_t vss_size;
-static int64_t vss_md_size;
-
 static void __load_vss(struct spdk_ftl_dev *dev,
 		struct ftl_nv_cache_block_metadata *vss,
 		int64_t vss_size, int64_t vss_md_size)
@@ -104,6 +101,7 @@ static void __load_vss(struct spdk_ftl_dev *dev,
 }
 
 static int __spdk_bdev_read_blocks_with_md(
+	struct ftl_nv_cache *nv_cache,
 	struct spdk_bdev_desc *desc, struct spdk_io_channel *ch, void *buf,
 	void *md_buf, int64_t offset_blocks, uint64_t num_blocks,
 	spdk_bdev_io_completion_cb cb, void *cb_arg)
@@ -115,11 +113,11 @@ static int __spdk_bdev_read_blocks_with_md(
 	while (iter_offset < iter_offset_end) {
 		struct ftl_nv_cache_block_metadata *md = iter_buf;
 
-		assert(iter_offset < vss_size);
-		md->lba = vss[iter_offset].lba;
+		assert(iter_offset < nv_cache->vss_size);
+		md->lba = nv_cache->vss[iter_offset].lba;
 
 		iter_offset++;
-		iter_buf += vss_md_size;
+		iter_buf += nv_cache->vss_md_size;
 	}
 
 	return spdk_bdev_read_blocks(desc, ch, buf, offset_blocks, num_blocks, cb,
@@ -127,6 +125,7 @@ static int __spdk_bdev_read_blocks_with_md(
 }
 
 static int __spdk_bdev_write_blocks_with_md(
+	struct ftl_nv_cache *nv_cache,
 	struct spdk_bdev_desc *desc, struct spdk_io_channel *ch, void *buf,
 	void *md_buf, int64_t offset_blocks, uint64_t num_blocks,
 	spdk_bdev_io_completion_cb cb, void *cb_arg)
@@ -138,11 +137,11 @@ static int __spdk_bdev_write_blocks_with_md(
 	while (iter_offset < iter_offset_end) {
 		struct ftl_nv_cache_block_metadata *md = iter_buf;
 
-		assert(iter_offset < vss_size);
-		vss[iter_offset].lba = md->lba;
+		assert(iter_offset < nv_cache->vss_size);
+		nv_cache->vss[iter_offset].lba = md->lba;
 
 		iter_offset++;
-		iter_buf += vss_md_size;
+		iter_buf += nv_cache->vss_md_size;
 	}
 
 	return spdk_bdev_write_blocks(desc, ch, buf, offset_blocks, num_blocks, cb,
@@ -297,12 +296,12 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 
 	nv_cache->ready = false;
 
-	vss = calloc(blocks, sizeof(vss[0]));
+	nv_cache->vss = calloc(blocks, sizeof(nv_cache->vss[0]));
 	for (i = 0; i < blocks; i++) {
-		vss[i].lba = FTL_LBA_INVALID;
+		nv_cache->vss[i].lba = FTL_LBA_INVALID;
 	}
-	vss_size = blocks;
-	vss_md_size = __spdk_bdev_get_md_size(bdev);
+	nv_cache->vss_size = blocks;
+	nv_cache->vss_md_size = __spdk_bdev_get_md_size(bdev);
 
 	TAILQ_INIT(&nv_cache->chunk_free_list);
 	TAILQ_INIT(&nv_cache->chunk_full_list);
@@ -728,6 +727,7 @@ static void compaction_process_read(
 	while (compaction->iter.idx < num_entries) {
 		if (compaction_entry_is_invalid(entry)) {
 			rc = __spdk_bdev_read_blocks_with_md(
+				  	 nv_cache,
 				     nv_cache->bdev_desc, ioch->cache_ioch, entry->payload, md,
 				     entry->addr.cache_offset, 1, compaction_process_read_cb, entry);
 
@@ -904,6 +904,7 @@ int ftl_nv_cache_read(struct ftl_io *io, struct ftl_addr addr,
 	assert(addr.cached);
 
 	rc = __spdk_bdev_read_blocks_with_md(
+			 nv_cache,
 		     nv_cache->bdev_desc, ioch->cache_ioch, ftl_io_iovec_addr(io),
 		     nv_cache->md_rd, addr.cache_offset, num_blocks, cb, cb_arg);
 
@@ -929,6 +930,7 @@ int ftl_nv_cache_write(struct ftl_io *io, struct ftl_addr addr,
 	ftl_trace_submission(io->dev, io, addr, num_blocks);
 
 	rc = __spdk_bdev_write_blocks_with_md(
+		     nv_cache,
 		     nv_cache->bdev_desc, ioch->cache_ioch,
 		     ftl_io_iovec_addr(io), md,
 		     addr.cache_offset, num_blocks, cb, cb_arg);
@@ -1055,7 +1057,7 @@ static void save_state_iter(struct state_context *cntx)
 	if (cntx->iter < nv_cache->num_meta_blocks) {
 		memcpy(cntx->dma_data, cntx->iter_data, FTL_BLOCK_SIZE);
 
-		rc = __spdk_bdev_write_blocks_with_md(
+		rc = __spdk_bdev_write_blocks_with_md(nv_cache,
 			     nv_cache->bdev_desc, ioch->cache_ioch,
 			     cntx->dma_data, cntx->meta,
 			     cntx->iter, 1, save_state_cb, cntx);
@@ -1191,9 +1193,10 @@ static void load_state_finish(struct state_context *arg)
 	SPDK_NOTICELOG("FTL NV Cache: full chunks = %lu , empty chunks = %lu\n",
 			nv_cache->chunk_full_count, nv_cache->chunk_free_count);
 
-	__load_vss(nv_cache->ftl_dev, vss, vss_size, vss_md_size);
+        __load_vss(nv_cache->ftl_dev, nv_cache->vss, nv_cache->vss_size,
+                   nv_cache->vss_md_size);
 
-	if (cntx->status) {
+        if (cntx->status) {
 		SPDK_NOTICELOG("FTL NV Cache: state loaded successfully\n");
 	} else {
 		SPDK_ERRLOG("FTL NV Cache: loading state ERROR\n");
@@ -1233,7 +1236,7 @@ static void load_state_iter(struct state_context *cntx)
 	int rc;
 
 	if (cntx->iter < nv_cache->num_meta_blocks) {
-		rc = __spdk_bdev_read_blocks_with_md(
+		rc = __spdk_bdev_read_blocks_with_md(nv_cache,
 			     nv_cache->bdev_desc, ioch->cache_ioch,
 			     cntx->dma_data, cntx->meta,
 			     cntx->iter, 1, load_state_cb, cntx);
