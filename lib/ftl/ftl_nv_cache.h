@@ -51,6 +51,7 @@ struct ftl_nv_cache;
 
 struct ftl_nv_cache_block_metadata {
 	uint64_t lba;
+	uint64_t sid;
 };
 
 struct ftl_nv_cache_chunk {
@@ -75,6 +76,7 @@ struct ftl_nv_cache_compaction {
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_list;
 	uint64_t metadata_size;
 	TAILQ_ENTRY(ftl_nv_cache_compaction) entry;
+	void *payload;
 	struct ftl_wbuf_entry entries[];
 };
 
@@ -105,6 +107,9 @@ struct ftl_nv_cache {
 
 	/* Number of data blocks */
 	uint64_t num_meta_blocks;
+
+	uint64_t num_meta_compaction_blocks;
+	uint64_t num_meta_chunk_blocks;
 
 	struct ftl_nv_cache_chunk *chunk;
 	uint64_t chunk_count;

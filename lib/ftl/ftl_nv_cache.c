@@ -327,9 +327,9 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 	}
 
 	/* Start compaction when full chunks exceed given % of entire chunks */
-	nv_cache->chunk_compaction_threshold = nv_cache->chunk_count * 9 / 10;
+	nv_cache->chunk_compaction_threshold = nv_cache->chunk_count * 8 / 10;
 	TAILQ_INIT(&nv_cache->compaction_list);
-	for (i = 0; i < 128; i++) {
+	for (i = 0; i < 512; i++) {
 		struct ftl_nv_cache_compaction *compact = compaction_alloc(dev);
 
 		if (!compact) {
@@ -350,19 +350,11 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 
 static bool _is_compaction_required(struct ftl_nv_cache *nv_cache)
 {
-	if (nv_cache->chunk_full_count < nv_cache->chunk_compaction_threshold) {
-		return false;
-	}
-
 	if (nv_cache->ftl_dev->halt) {
 		return false;
 	}
 
-	uint64_t compacted_load_blocks =
-		nv_cache->compaction_active_count *
-		(FTL_NV_CACHE_CHUNK_DATA_SIZE / FTL_BLOCK_SIZE);
-
-	if (compacted_load_blocks > nv_cache->load_blocks) {
+	if (nv_cache->chunk_full_count < nv_cache->chunk_compaction_threshold) {
 		return false;
 	}
 
@@ -566,12 +558,8 @@ static void compaction_free(struct spdk_ftl_dev *dev,
 		return;
 	}
 
-	if (compaction->entries) {
-		for (i = 0; i < compaction->batch->num_entries; ++i) {
-			if (compaction->entries[i].payload) {
-				spdk_free(compaction->entries[i].payload);
-			}
-		}
+	if (compaction->payload) {
+		spdk_free(compaction->payload);
 	}
 
 	if (compaction->batch) {
@@ -816,6 +804,7 @@ static struct ftl_nv_cache_compaction *compaction_alloc(
 	struct ftl_wbuf_entry *entry;
 	uint64_t i;
 	size_t size;
+	void *payload;
 
 	size =
 		sizeof(*compaction) + (sizeof(compaction->entries[0]) * dev->xfer_size);
@@ -840,13 +829,16 @@ static struct ftl_nv_cache_compaction *compaction_alloc(
 		goto ERROR;
 	}
 
+	payload = compaction->payload = spdk_zmalloc(FTL_BLOCK_SIZE * batch->num_entries,
+		FTL_BLOCK_SIZE, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
+	if (!payload) {
+		goto ERROR;
+	}
+
 	entry = compaction->entries;
 	for (i = 0; i < batch->num_entries; ++i, ++entry) {
-		entry->payload = spdk_zmalloc(FTL_BLOCK_SIZE, FTL_BLOCK_SIZE, NULL,
-					      SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-		if (!entry->payload) {
-			goto ERROR;
-		}
+		entry->payload = payload;
+		payload += FTL_BLOCK_SIZE;
 
 		entry->addr.offset = FTL_ADDR_INVALID;
 		entry->lba = FTL_LBA_INVALID;
