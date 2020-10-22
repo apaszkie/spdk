@@ -52,6 +52,9 @@ SPDK_STATIC_ASSERT(
 static struct ftl_nv_cache_compaction *compaction_alloc(
 	struct spdk_ftl_dev *dev);
 
+static void compaction_free(struct spdk_ftl_dev *dev,
+			    struct ftl_nv_cache_compaction *compaction);
+
 static void compaction_process_ftl_done(struct spdk_ftl_dev *ftl,
 					struct ftl_batch *batch);
 
@@ -167,15 +170,41 @@ static struct spdk_bdev_module _ftl_bdev_nv_cache_module = {
 
 void ftl_nv_cache_deinit(struct spdk_ftl_dev *dev)
 {
-	if (!dev->nv_cache.bdev_desc) {
-		return;
+	struct ftl_nv_cache_compaction *compaction;
+	struct ftl_nv_cache *nv_cache = &dev->nv_cache;
+
+	while(!TAILQ_EMPTY(&nv_cache->compaction_list)) {
+		compaction = TAILQ_FIRST(&nv_cache->compaction_list);
+		TAILQ_REMOVE(&nv_cache->compaction_list, compaction, entry);
+
+		compaction_free(dev, compaction);
 	}
 
-	spdk_bdev_module_release_bdev(
-		spdk_bdev_desc_get_bdev(dev->nv_cache.bdev_desc));
-	spdk_bdev_close(dev->nv_cache.bdev_desc);
+	if (dev->nv_cache.bdev_desc) {
+		spdk_bdev_module_release_bdev(
+			spdk_bdev_desc_get_bdev(dev->nv_cache.bdev_desc));
+		spdk_bdev_close(dev->nv_cache.bdev_desc);
+	}
 
-	/* TODO(mbarczak) Cleanup fully */
+	if (nv_cache->md_pool) {
+		if (nv_cache->md_rd) {
+			//spdk_mempool_put(nv_cache->md_pool, nv_cache->md_rd);
+			nv_cache->md_rd = NULL;
+		}
+
+		spdk_mempool_free(nv_cache->md_pool);
+		nv_cache->md_pool = NULL;
+	}
+
+	if (nv_cache->vss) {
+		free(nv_cache->vss);
+		nv_cache->vss = NULL;
+	}
+
+	if (nv_cache->chunk) {
+		free(nv_cache->chunk);
+		nv_cache->chunk = NULL;
+	}
 }
 
 int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
@@ -329,7 +358,7 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 	/* Start compaction when full chunks exceed given % of entire chunks */
 	nv_cache->chunk_compaction_threshold = nv_cache->chunk_count * 8 / 10;
 	TAILQ_INIT(&nv_cache->compaction_list);
-	for (i = 0; i < 512; i++) {
+	for (i = 0; i < 256; i++) {
 		struct ftl_nv_cache_compaction *compact = compaction_alloc(dev);
 
 		if (!compact) {
@@ -564,7 +593,7 @@ static void compaction_free(struct spdk_ftl_dev *dev,
 
 	if (compaction->batch) {
 		if (compaction->batch->metadata) {
-			spdk_mempool_put(dev->nv_cache.md_pool, compaction->batch->metadata);
+			//spdk_mempool_put(dev->nv_cache.md_pool, compaction->batch->metadata);
 		}
 
 		for (i = 0; i < compaction->batch->num_entries; ++i) {
