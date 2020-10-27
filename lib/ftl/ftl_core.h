@@ -414,6 +414,12 @@ ftl_addr_cached(struct ftl_addr addr)
 	return !ftl_addr_invalid(addr) && addr.cached;
 }
 
+static inline int
+ftl_addr_not_cached(struct ftl_addr addr)
+{
+	return !ftl_addr_invalid(addr) && !addr.cached;
+}
+
 static inline struct ftl_addr
 ftl_addr_to_packed(const struct spdk_ftl_dev *dev, struct ftl_addr addr)
 {

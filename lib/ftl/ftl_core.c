@@ -1237,11 +1237,11 @@ ftl_update_nv_cache_l2p_update(struct ftl_io *io)
 	struct spdk_ftl_dev *dev = io->dev;
 	uint64_t lba = io->lba.single;
 	struct ftl_addr next_addr = io->addr;
-	struct ftl_addr waek_addr = { .offset = FTL_LBA_INVALID };
+	struct ftl_addr weak_addr = ftl_to_addr(FTL_ADDR_INVALID);
 	uint64_t end_block = lba + io->num_blocks;
 
 	do {
-		ftl_update_l2p(dev, lba, next_addr, waek_addr, false);
+		ftl_update_l2p(dev, lba, next_addr, weak_addr, false);
 		next_addr.cache_offset++;
 	} while (++lba < end_block);
 }
@@ -1443,14 +1443,6 @@ ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
 		return;
 	}
 
-	if (io_weak && !ftl_addr_cmp(prev_addr, weak_addr)) {
-		/* It's weak IO (GC IO or NV cache to NAND compaction,
-		 * but in the mean time a new user IO which had updated mapping */
-
-		assert(ftl_addr_cached(prev_addr));
-		return;
-	}
-
 	if (ftl_addr_cached(new_addr)) {
 		/*
 		 * Previous block on NV Cache, New one to NV Cache
@@ -1459,21 +1451,32 @@ ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
 		 */
 		ftl_l2p_set(dev, lba, new_addr);
 
-		if (!ftl_addr_cached(prev_addr)) {
+		if (ftl_addr_not_cached(prev_addr)) {
 			/* Invalidate LBA map */
 			ftl_invalidate_addr(dev, prev_addr);
 		}
 
+		if (ftl_addr_not_cached(weak_addr)) {
+			/* Invalidate LBA map */
+			ftl_invalidate_addr(dev, weak_addr);
+		}
 		return;
 	}
 
-	/* Validate address */
-	ftl_l2p_set(dev, lba, new_addr);
+	if (ftl_addr_cmp(prev_addr, weak_addr)) {
+		/* Validate address */
+		ftl_l2p_set(dev, lba, new_addr);
 
-	ftl_band_set_addr(ftl_band_from_addr(dev, new_addr), lba, new_addr);
-	/* L2P not changed in the meantime we can update location */
-	if (!ftl_addr_cached(prev_addr)) {
-		ftl_invalidate_addr(dev, prev_addr);
+		ftl_band_set_addr(ftl_band_from_addr(dev, new_addr), lba,
+				new_addr);
+		/* L2P not changed in the meantime we can update location */
+		if (ftl_addr_not_cached(prev_addr)) {
+			ftl_invalidate_addr(dev, prev_addr);
+		}
+	} else {
+		if (ftl_addr_not_cached(weak_addr)) {
+			ftl_invalidate_addr(dev, weak_addr);
+		}
 	}
 
 	return;
