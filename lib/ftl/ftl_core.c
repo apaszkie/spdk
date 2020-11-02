@@ -531,12 +531,6 @@ ftl_submit_erase(struct ftl_io *io)
 	return rc;
 }
 
-static bool
-ftl_check_core_thread(const struct spdk_ftl_dev *dev)
-{
-	return dev->core_thread == spdk_get_thread();
-}
-
 struct spdk_io_channel *
 ftl_get_io_channel(const struct spdk_ftl_dev *dev)
 {

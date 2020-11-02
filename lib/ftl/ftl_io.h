@@ -73,8 +73,6 @@ enum ftl_io_flags {
 	FTL_IO_DIRECT_ACCESS	= (1 << 8),
 	/* Bypass the non-volatile cache */
 	FTL_IO_BYPASS_CACHE	= (1 << 9),
-	/* NV Cache compaction IO */
-	FTL_IO_NV_CACHE_COMPACT	= (1 << 10),
 };
 
 enum ftl_io_type {

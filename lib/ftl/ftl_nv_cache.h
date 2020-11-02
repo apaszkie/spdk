@@ -67,15 +67,22 @@ struct ftl_nv_cache_chunk {
 struct ftl_nv_cache_compaction {
 	struct ftl_batch *batch;
 	struct ftl_nv_cache *nv_cache;
-	struct {
-		uint64_t idx;
-		uint64_t io_count;
-		uint64_t valid_count;
-		struct ftl_wbuf_entry *entry;
-	} iter;
+	uint64_t batch_iter;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_list;
 	uint64_t metadata_size;
 	TAILQ_ENTRY(ftl_nv_cache_compaction) entry;
+	struct {
+		void *payload;
+		void *md;
+		uint64_t max_count;
+		struct iovec *iovec;
+		struct {
+			uint64_t idx;
+			uint64_t count;
+			uint64_t rd_ptr;
+			struct ftl_nv_cache_chunk *chunk;
+		} iter;
+	} reader ;
 	void *payload;
 	struct ftl_wbuf_entry entries[];
 };
