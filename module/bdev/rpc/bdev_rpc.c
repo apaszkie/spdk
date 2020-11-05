@@ -84,15 +84,14 @@ rpc_bdev_get_iostat_cb(struct spdk_bdev *bdev,
 		spdk_json_write_named_uint64(w, "unmap_latency_ticks", stat->unmap_latency_ticks);
 
 		if (spdk_bdev_get_qd_sampling_period(bdev)) {
-			spdk_json_write_named_uint64(w, "queue_depth_polling_period",
-						     spdk_bdev_get_qd_sampling_period(bdev));
-
-			spdk_json_write_named_uint64(w, "queue_depth", spdk_bdev_get_qd(bdev));
-
-			spdk_json_write_named_uint64(w, "io_time", spdk_bdev_get_io_time(bdev));
-
-			spdk_json_write_named_uint64(w, "weighted_io_time",
-						     spdk_bdev_get_weighted_io_time(bdev));
+		   //
+		   //dump qd fix
+		   //
+		   spdk_json_write_named_uint64(w, "queue_depth_polling_period",stat->sampling_period);
+		   spdk_json_write_named_uint64(w, "total_queue_depth", stat->total_queue_depth);
+		   spdk_json_write_named_uint64(w, "total_io_time", stat->total_io_time);
+		   spdk_json_write_named_uint64(w, "total_busy_io_time", stat->total_busy_io_time);
+					
 		}
 
 		spdk_json_write_object_end(w);

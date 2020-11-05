@@ -181,6 +181,12 @@ struct spdk_bdev_io_stat {
 	uint64_t write_latency_ticks;
 	uint64_t unmap_latency_ticks;
 	uint64_t ticks_rate;
+	/* extends io stat qd dump*/
+	uint64_t sampling_period;
+	uint64_t temporary_queue_depth;
+	uint64_t total_queue_depth;
+	uint64_t total_io_time;
+	uint64_t total_busy_io_time;
 };
 
 struct spdk_bdev_opts {
@@ -597,21 +603,6 @@ bool spdk_bdev_is_dif_head_of_md(const struct spdk_bdev *bdev);
 bool spdk_bdev_is_dif_check_enabled(const struct spdk_bdev *bdev,
 				    enum spdk_dif_check_type check_type);
 
-/**
- * Get the most recently measured queue depth from a bdev.
- *
- * The reported queue depth is the aggregate of outstanding I/O
- * across all open channels associated with this bdev.
- *
- * \param bdev Block device to query.
- *
- * \return The most recent queue depth measurement for the bdev.
- * If tracking is not enabled, the function will return UINT64_MAX
- * It is also possible to receive UINT64_MAX after enabling tracking
- * but before the first period has expired.
- */
-uint64_t
-spdk_bdev_get_qd(const struct spdk_bdev *bdev);
 
 /**
  * Get the queue depth polling period.
@@ -639,39 +630,7 @@ spdk_bdev_get_qd_sampling_period(const struct spdk_bdev *bdev);
  */
 void spdk_bdev_set_qd_sampling_period(struct spdk_bdev *bdev, uint64_t period);
 
-/**
- * Get the time spent processing IO for this device.
- *
- * This value is dependent upon the queue depth sampling period and is
- * incremented at sampling time by the sampling period only if the measured
- * queue depth is greater than 0.
- *
- * The disk utilization can be calculated by the following formula:
- * disk_util = (io_time_2 - io_time_1) / elapsed_time.
- * The user is responsible for tracking the elapsed time between two measurements.
- *
- * \param bdev Block device to query.
- *
- * \return The io time for this device in microseconds.
- */
-uint64_t spdk_bdev_get_io_time(const struct spdk_bdev *bdev);
 
-/**
- * Get the weighted IO processing time for this bdev.
- *
- * This value is dependent upon the queue depth sampling period and is
- * equal to the time spent reading from or writing to a device times
- * the measured queue depth during each sampling period.
- *
- * The average queue depth can be calculated by the following formula:
- * queue_depth = (weighted_io_time_2 - weighted_io_time_1) / elapsed_time.
- * The user is responsible for tracking the elapsed time between two measurements.
- *
- * \param bdev Block device to query.
- *
- * \return The weighted io time for this device in microseconds.
- */
-uint64_t spdk_bdev_get_weighted_io_time(const struct spdk_bdev *bdev);
 
 /**
  * Obtain an I/O channel for the block device opened by the specified

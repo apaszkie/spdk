@@ -41,11 +41,8 @@
 	spdk_bdev_get_dif_type;
 	spdk_bdev_is_dif_head_of_md;
 	spdk_bdev_is_dif_check_enabled;
-	spdk_bdev_get_qd;
 	spdk_bdev_get_qd_sampling_period;
 	spdk_bdev_set_qd_sampling_period;
-	spdk_bdev_get_io_time;
-	spdk_bdev_get_weighted_io_time;
 	spdk_bdev_get_io_channel;
 	spdk_bdev_read;
 	spdk_bdev_read_blocks;

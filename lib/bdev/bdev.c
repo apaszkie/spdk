@@ -2842,6 +2842,14 @@ bdev_io_stat_add(struct spdk_bdev_io_stat *total, struct spdk_bdev_io_stat *add)
 	total->read_latency_ticks += add->read_latency_ticks;
 	total->write_latency_ticks += add->write_latency_ticks;
 	total->unmap_latency_ticks += add->unmap_latency_ticks;
+
+	//
+	//dump qd
+	//
+	total->sampling_period += add->sampling_period;
+	total->total_queue_depth += add->total_queue_depth;
+	total->total_io_time += add->total_io_time;
+	total->total_busy_io_time += add->total_busy_io_time;
 }
 
 static void
@@ -3121,41 +3129,30 @@ spdk_bdev_is_dif_check_enabled(const struct spdk_bdev *bdev,
 	}
 }
 
-uint64_t
-spdk_bdev_get_qd(const struct spdk_bdev *bdev)
-{
-	return bdev->internal.measured_queue_depth;
-}
 
 uint64_t
 spdk_bdev_get_qd_sampling_period(const struct spdk_bdev *bdev)
 {
-	return bdev->internal.period;
+	return bdev->internal.stat.sampling_period;
 }
 
-uint64_t
-spdk_bdev_get_weighted_io_time(const struct spdk_bdev *bdev)
-{
-	return bdev->internal.weighted_io_time;
-}
-
-uint64_t
-spdk_bdev_get_io_time(const struct spdk_bdev *bdev)
-{
-	return bdev->internal.io_time;
-}
 
 static void
 _calculate_measured_qd_cpl(struct spdk_io_channel_iter *i, int status)
 {
 	struct spdk_bdev *bdev = spdk_io_channel_iter_get_ctx(i);
 
-	bdev->internal.measured_queue_depth = bdev->internal.temporary_queue_depth;
 
-	if (bdev->internal.measured_queue_depth) {
-		bdev->internal.io_time += bdev->internal.period;
-		bdev->internal.weighted_io_time += bdev->internal.period * bdev->internal.measured_queue_depth;
+	//
+	//dump qd
+	//
+	bdev->internal.stat.total_queue_depth += bdev->internal.stat.temporary_queue_depth;
+                                                     
+	if (bdev->internal.stat.temporary_queue_depth) {
+	   bdev->internal.stat.total_busy_io_time += bdev->internal.stat.sampling_period;
 	}
+	
+	bdev->internal.stat.total_io_time += bdev->internal.stat.sampling_period;
 }
 
 static void
@@ -3165,7 +3162,7 @@ _calculate_measured_qd(struct spdk_io_channel_iter *i)
 	struct spdk_io_channel *io_ch = spdk_io_channel_iter_get_channel(i);
 	struct spdk_bdev_channel *ch = spdk_io_channel_get_ctx(io_ch);
 
-	bdev->internal.temporary_queue_depth += ch->io_outstanding;
+	bdev->internal.stat.temporary_queue_depth += ch->io_outstanding;
 	spdk_for_each_channel_continue(i, 0);
 }
 
@@ -3173,7 +3170,7 @@ static int
 bdev_calculate_measured_queue_depth(void *ctx)
 {
 	struct spdk_bdev *bdev = ctx;
-	bdev->internal.temporary_queue_depth = 0;
+	bdev->internal.stat.temporary_queue_depth = 0;
 	spdk_for_each_channel(__bdev_to_io_dev(bdev), _calculate_measured_qd, bdev,
 			      _calculate_measured_qd_cpl);
 	return SPDK_POLLER_BUSY;
@@ -3182,12 +3179,16 @@ bdev_calculate_measured_queue_depth(void *ctx)
 void
 spdk_bdev_set_qd_sampling_period(struct spdk_bdev *bdev, uint64_t period)
 {
-	bdev->internal.period = period;
+	bdev->internal.stat.sampling_period = period;
 
 	if (bdev->internal.qd_poller != NULL) {
 		spdk_poller_unregister(&bdev->internal.qd_poller);
-		bdev->internal.measured_queue_depth = UINT64_MAX;
+		bdev->internal.stat.total_queue_depth = UINT64_MAX;
 	}
+
+	//dump qd
+	bdev->internal.stat.total_io_time = 0;
+	bdev->internal.stat.total_busy_io_time = 0;
 
 	if (period != 0) {
 		bdev->internal.qd_poller = SPDK_POLLER_REGISTER(bdev_calculate_measured_queue_depth, bdev,
@@ -5285,7 +5286,10 @@ bdev_init(struct spdk_bdev *bdev)
 	}
 
 	bdev->internal.status = SPDK_BDEV_STATUS_READY;
-	bdev->internal.measured_queue_depth = UINT64_MAX;
+	//dump qd 
+	bdev->internal.stat.total_io_time = UINT64_MAX;
+	bdev->internal.stat.total_busy_io_time = UINT64_MAX;
+
 	bdev->internal.claim_module = NULL;
 	bdev->internal.qd_poller = NULL;
 	bdev->internal.qos = NULL;

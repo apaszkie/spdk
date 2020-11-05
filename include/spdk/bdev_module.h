@@ -414,20 +414,6 @@ struct spdk_bdev {
 		/** poller for tracking the queue_depth of a device, NULL if not tracking */
 		struct spdk_poller *qd_poller;
 
-		/** period at which we poll for queue depth information */
-		uint64_t period;
-
-		/** used to aggregate queue depth while iterating across the bdev's open channels */
-		uint64_t temporary_queue_depth;
-
-		/** queue depth as calculated the last time the telemetry poller checked. */
-		uint64_t measured_queue_depth;
-
-		/** most recent value of ticks spent performing I/O. Used to calculate the weighted time doing I/O */
-		uint64_t io_time;
-
-		/** weighted time performing I/O. Equal to measured_queue_depth * period */
-		uint64_t weighted_io_time;
 
 		/** accumulated I/O statistics for previously deleted channels of this bdev */
 		struct spdk_bdev_io_stat stat;
