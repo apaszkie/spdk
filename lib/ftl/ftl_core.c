@@ -293,17 +293,17 @@ ftl_release_batch(struct spdk_ftl_dev *dev, struct ftl_batch *batch)
 	TAILQ_INSERT_TAIL(&dev->free_batches, batch, tailq);
 }
 
-static struct ftl_addr
-ftl_get_addr_from_entry(struct ftl_wbuf_entry *entry)
-{
-	struct ftl_io_channel *ioch = entry->ioch;
-	struct ftl_addr addr = {};
-
-	addr.cached = 1;
-	addr.cache_offset = (uint64_t)entry->index << ioch->dev->ioch_shift | ioch->index;
-
-	return addr;
-}
+//static struct ftl_addr
+//ftl_get_addr_from_entry(struct ftl_wbuf_entry *entry)
+//{
+//	struct ftl_io_channel *ioch = entry->ioch;
+//	struct ftl_addr addr = {};
+//
+//	addr.cached = 1;
+//	addr.cache_offset = (uint64_t)entry->index << ioch->dev->ioch_shift | ioch->index;
+//
+//	return addr;
+//}
 
 
 static struct ftl_wbuf_entry *
@@ -1251,37 +1251,6 @@ ftl_process_flush(struct spdk_ftl_dev *dev, struct ftl_batch *batch)
 			}
 		}
 	}
-}
-
-static void
-ftl_nv_cache_wrap_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
-{
-	struct ftl_nv_cache *nv_cache = cb_arg;
-
-	if (!success) {
-		SPDK_ERRLOG("Unable to write non-volatile cache metadata header\n");
-		/* TODO: go into read-only mode */
-		assert(0);
-	}
-
-	nv_cache->ready = true;
-
-	spdk_bdev_free_io(bdev_io);
-}
-
-static struct ftl_io *
-ftl_alloc_io_nv_cache(struct ftl_io *parent, size_t num_blocks)
-{
-	struct ftl_io_init_opts opts = {
-		.dev		= parent->dev,
-		.parent		= parent,
-		.iovcnt		= 0,
-		.num_blocks	= num_blocks,
-		.flags		= parent->flags | FTL_IO_CACHE,
-		.ioch		= ftl_get_io_channel(parent->dev),
-	};
-
-	return ftl_io_init_internal(&opts);
 }
 
 static inline void
