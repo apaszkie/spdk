@@ -229,6 +229,7 @@ spdk_fio_bdev_init_start(void *arg)
 	bool *done = arg;
 
 	if (g_json_config_file != NULL) {
+		SPDK_NOTICELOG("Load JSON configuration %s\n", g_json_config_file);
 		spdk_app_json_config_load(g_json_config_file, SPDK_DEFAULT_RPC_ADDR,
 					  spdk_fio_bdev_init_done, done, true);
 	} else {
@@ -421,6 +422,7 @@ spdk_init_thread_poll(void *arg)
 		}
 		spdk_conf_set_as_default(config);
 	} else if (eo->json_conf && strlen(eo->json_conf)) {
+		SPDK_NOTICELOG("Configuration file provided %s\n", eo->json_conf);
 		g_json_config_file = eo->json_conf;
 	} else {
 		SPDK_ERRLOG("No configuration file provided\n");
