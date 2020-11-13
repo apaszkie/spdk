@@ -735,6 +735,7 @@ static void compaction_process_finish_read(struct ftl_nv_cache_compaction *compa
 			 */
 			iter->addr = current_addr;
 			iter->priv_data = compaction->reader.iter.chunk;
+			iter->lba = md->lba;
 
 			/* Advance within batch */
 			iter++;
