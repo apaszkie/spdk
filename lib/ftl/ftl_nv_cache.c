@@ -458,7 +458,7 @@ static struct ftl_nv_cache_chunk *get_chunk_for_compaction(
 
 		assert(chunk->write_pointer);
 	} else {
-		assert(0);
+		return NULL;
 	}
 
 	if (spdk_likely(chunk)) {
@@ -802,6 +802,11 @@ static void compaction_process_start(
 	 * Get currently handled chunk
 	 */
 	chunk = get_chunk_for_compaction(compaction);
+	if (!chunk) {
+		nv_cache->compaction_active_count--;
+		TAILQ_INSERT_HEAD(&nv_cache->compaction_list, compaction, entry);
+		return;
+	}
 	compaction->reader.iter.chunk = chunk;
 
 	/*
@@ -1241,7 +1246,7 @@ static void load_state_finish(struct state_context *arg)
 		assert(0);
 	}
 
-	SPDK_NOTICELOG("FTL NV Cache: full chunks = %lu , empty chunks = %lu\n",
+	SPDK_NOTICELOG("FTL NV Cache: full chunks = %lu, empty chunks = %lu\n",
 			nv_cache->chunk_full_count, nv_cache->chunk_free_count);
 
         __load_vss(nv_cache->ftl_dev, nv_cache->vss, nv_cache->vss_size,

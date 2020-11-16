@@ -152,8 +152,12 @@ ftl_io_iovec_addr(struct ftl_io *io)
 size_t
 ftl_io_iovec_len_left(struct ftl_io *io)
 {
-	struct iovec *iov = ftl_io_iovec(io);
-	return iov[io->iov_pos].iov_len / FTL_BLOCK_SIZE - io->iov_off;
+	if (io->iov_pos < io->iov_cnt) {
+		struct iovec *iov = ftl_io_iovec(io);
+		return iov[io->iov_pos].iov_len / FTL_BLOCK_SIZE - io->iov_off;
+	} else {
+		return 0;
+	}
 }
 
 static void

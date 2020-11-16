@@ -501,7 +501,6 @@ static inline struct ftl_addr
 ftl_l2p_get(struct spdk_ftl_dev *dev, uint64_t lba)
 {
 	assert(dev->num_lbas > lba);
-	assert(ftl_check_core_thread(dev));
 
 	if (ftl_addr_packed(dev)) {
 		return ftl_addr_from_packed(dev, ftl_to_addr_packed(
