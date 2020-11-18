@@ -6,12 +6,13 @@ filename=${FTL_BDEV_NAME}
 spdk_core_mask=${SPDK_CORE_MASK}
 # CPUS allowed fio threads cannot interleave with SPDK cores
 cpus_allowed=12-15
+cpus_allowed_policy=split
 direct=1
 thread=1
 buffered=0
-size=100%
 time_based
-norandommap
+norandommap=1
+randrepeat=0
 scramble_buffers=1
 group_reporting
 random_distribution=random
