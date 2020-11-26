@@ -43,6 +43,7 @@
 #include "spdk/queue.h"
 #include "spdk/util.h"
 #include "spdk/likely.h"
+#include "spdk/rpc.h"
 
 #include "spdk_internal/thread.h"
 #include "spdk_internal/event.h"
@@ -480,6 +481,9 @@ spdk_init_thread_poll(void *arg)
 	pthread_mutex_lock(&g_init_mtx);
 	pthread_cond_signal(&g_init_cond);
 
+	spdk_rpc_initialize(SPDK_DEFAULT_RPC_ADDR);
+	spdk_rpc_set_state(SPDK_RPC_RUNTIME);
+
 	while (g_poll_loop) {
 		spdk_fio_poll_thread(fio_thread);
 
@@ -491,6 +495,8 @@ spdk_init_thread_poll(void *arg)
 			break;
 		}
 	}
+
+	spdk_rpc_finish();
 
 	pthread_mutex_unlock(&g_init_mtx);
 
