@@ -183,10 +183,6 @@ struct ftl_io_channel {
 	uint64_t				index;
 	/* IO pool */
 	struct spdk_mempool			*io_pool;
-	/* Underlying device IO channel */
-	struct spdk_io_channel			*base_ioch;
-	/* Persistent cache IO channel */
-	struct spdk_io_channel			*cache_ioch;
 	/* Poller used for completing write requests and retrying IO */
 	struct spdk_poller			*poller;
 	/* Write completion queue */

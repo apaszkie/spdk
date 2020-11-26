@@ -189,6 +189,11 @@ void ftl_nv_cache_deinit(struct spdk_ftl_dev *dev)
 		compaction_free(dev, compaction);
 	}
 
+	if (dev->nv_cache.cache_ioch) {
+		spdk_put_io_channel(dev->nv_cache.cache_ioch);
+		dev->nv_cache.cache_ioch = NULL;
+	}
+
 	if (dev->nv_cache.bdev_desc) {
 		spdk_bdev_module_release_bdev(
 			spdk_bdev_desc_get_bdev(dev->nv_cache.bdev_desc));
@@ -256,6 +261,12 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 	if (spdk_bdev_get_block_size(bdev) != FTL_BLOCK_SIZE) {
 		SPDK_ERRLOG("Unsupported block size (%d)\n",
 			    spdk_bdev_get_block_size(bdev));
+		return -1;
+	}
+
+	nv_cache->cache_ioch = spdk_bdev_get_io_channel(nv_cache->bdev_desc);
+	if (!nv_cache->cache_ioch) {
+		SPDK_ERRLOG("Failed to create cache IO channel for NV Cache\n");
 		return -1;
 	}
 
@@ -787,7 +798,6 @@ static void compaction_process_start(
 {
 	int rc;
 	struct ftl_nv_cache *nv_cache = compaction->nv_cache;
-	struct ftl_io_channel *ioch;
 	struct ftl_nv_cache_chunk *chunk;
 	uint64_t to_read, addr;
 
@@ -819,10 +829,9 @@ static void compaction_process_start(
 	compaction->reader.iter.idx = 0;
 
 	/* Read data and metadata from NV cache */
-	ioch = ftl_io_channel_get_ctx(ftl_get_io_channel(nv_cache->ftl_dev));
 	addr = chunk->offset + compaction->reader.iter.rd_ptr;
 	rc = __spdk_bdev_readv_blocks_with_md(nv_cache, nv_cache->bdev_desc,
-			ioch->cache_ioch,
+			nv_cache->cache_ioch,
 			compaction->reader.iovec, to_read,
 			compaction->reader.md,
 			addr, to_read,
@@ -954,14 +963,12 @@ int ftl_nv_cache_read(struct ftl_io *io, struct ftl_addr addr,
 {
 	int rc;
 	struct ftl_nv_cache *nv_cache = &io->dev->nv_cache;
-	struct ftl_io_channel *ioch =
-		ftl_io_channel_get_ctx(ftl_get_io_channel(io->dev));
 
 	assert(addr.cached);
 
 	rc = __spdk_bdev_read_blocks_with_md(
 			 nv_cache,
-		     nv_cache->bdev_desc, ioch->cache_ioch, ftl_io_iovec_addr(io),
+		     nv_cache->bdev_desc, nv_cache->cache_ioch, ftl_io_iovec_addr(io),
 		     nv_cache->md_rd, addr.cache_offset, num_blocks, cb, cb_arg);
 
 	if (spdk_likely(0 == rc)) {
@@ -977,8 +984,6 @@ int ftl_nv_cache_write(struct ftl_io *io, struct ftl_addr addr,
 {
 	int rc;
 	struct ftl_nv_cache *nv_cache = &io->dev->nv_cache;
-	struct ftl_io_channel *ioch =
-		ftl_io_channel_get_ctx(ftl_get_io_channel(io->dev));
 
 	assert(addr.cached);
 
@@ -987,7 +992,7 @@ int ftl_nv_cache_write(struct ftl_io *io, struct ftl_addr addr,
 
 	rc = __spdk_bdev_write_blocks_with_md(
 		     nv_cache,
-		     nv_cache->bdev_desc, ioch->cache_ioch,
+		     nv_cache->bdev_desc, nv_cache->cache_ioch,
 		     ftl_io_iovec_addr(io), md,
 		     addr.cache_offset, num_blocks, cb, cb_arg);
 
@@ -1106,15 +1111,13 @@ static void save_state_cb(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 static void save_state_iter(struct state_context *cntx)
 {
 	struct ftl_nv_cache *nv_cache = cntx->nv_cache;
-	struct ftl_io_channel *ioch =
-		ftl_io_channel_get_ctx(ftl_get_io_channel(nv_cache->ftl_dev));
 	int rc;
 
 	if (cntx->iter < nv_cache->num_meta_blocks) {
 		memcpy(cntx->dma_data, cntx->iter_data, FTL_BLOCK_SIZE);
 
 		rc = __spdk_bdev_write_blocks_with_md(nv_cache,
-			     nv_cache->bdev_desc, ioch->cache_ioch,
+			     nv_cache->bdev_desc, nv_cache->cache_ioch,
 			     cntx->dma_data, cntx->meta,
 			     cntx->iter, 1, save_state_cb, cntx);
 
@@ -1287,13 +1290,11 @@ static void load_state_cb(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 static void load_state_iter(struct state_context *cntx)
 {
 	struct ftl_nv_cache *nv_cache = cntx->nv_cache;
-	struct ftl_io_channel *ioch =
-		ftl_io_channel_get_ctx(ftl_get_io_channel(nv_cache->ftl_dev));
 	int rc;
 
 	if (cntx->iter < nv_cache->num_meta_blocks) {
 		rc = __spdk_bdev_read_blocks_with_md(nv_cache,
-			     nv_cache->bdev_desc, ioch->cache_ioch,
+			     nv_cache->bdev_desc, nv_cache->cache_ioch,
 			     cntx->dma_data, cntx->meta,
 			     cntx->iter, 1, load_state_cb, cntx);
 

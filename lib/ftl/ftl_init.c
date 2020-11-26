@@ -70,9 +70,7 @@ struct ftl_dev_init_ctx {
 	/* Owner */
 	struct spdk_ftl_dev		*dev;
 	/* Initial arguments */
-	struct spdk_ftl_dev_init_opts	opts;
-	/* IO channel for zone info retrieving */
-	struct spdk_io_channel		*ioch;
+	struct spdk_ftl_dev_init_opts    opts;
 	/* Buffer for reading zone info  */
 	struct spdk_bdev_zone_info	info[FTL_ZONE_INFO_COUNT];
 	/* Currently read zone */
@@ -242,6 +240,7 @@ ftl_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *
 	case SPDK_BDEV_EVENT_MEDIA_MANAGEMENT:
 		assert(bdev == spdk_bdev_desc_get_bdev(dev->base_bdev_desc));
 		ftl_get_media_events(dev);
+		break;
 	default:
 		break;
 	}
@@ -407,6 +406,7 @@ ftl_init_bands_state(struct spdk_ftl_dev *dev)
 static void
 _ftl_dev_init_core_thread(void *ctx)
 {
+	/* This now can be executed without message passing */
 	struct spdk_ftl_dev *dev = ctx;
 
 	dev->core_poller = SPDK_POLLER_REGISTER(ftl_task_core, dev, 0);
@@ -532,11 +532,7 @@ ftl_dev_free_init_ctx(struct ftl_dev_init_ctx *init_ctx)
 		return;
 	}
 
-	if (init_ctx->ioch) {
-		spdk_put_io_channel(init_ctx->ioch);
-	}
-
-	free(init_ctx);
+	free(init_ctx); // XXX
 }
 
 static void
@@ -840,12 +836,6 @@ ftl_dev_init_state(struct ftl_dev_init_ctx *init_ctx)
 
 	ftl_dev_update_bands(dev);
 
-	if (ftl_dev_init_core_thread(dev)) {
-		SPDK_ERRLOG("Unable to initialize device thread\n");
-		ftl_init_fail(init_ctx);
-		return;
-	}
-
 	dev->reloc = ftl_reloc_init(dev);
 	if (!dev->reloc) {
 		SPDK_ERRLOG("Unable to initialize reloc structures\n");
@@ -937,7 +927,7 @@ ftl_dev_get_zone_info(struct ftl_dev_init_ctx *init_ctx)
 
 	num_zones = spdk_min(zones_left, FTL_ZONE_INFO_COUNT);
 
-	rc = spdk_bdev_get_zone_info(dev->base_bdev_desc, init_ctx->ioch,
+	rc = spdk_bdev_get_zone_info(dev->base_bdev_desc, dev->base_ioch,
 				     init_ctx->zone_id, num_zones, init_ctx->info,
 				     ftl_dev_get_zone_info_cb, init_ctx);
 
@@ -950,15 +940,7 @@ ftl_dev_get_zone_info(struct ftl_dev_init_ctx *init_ctx)
 static int
 ftl_dev_init_zones(struct ftl_dev_init_ctx *init_ctx)
 {
-	struct spdk_ftl_dev *dev =  init_ctx->dev;
-
 	init_ctx->zone_id = 0;
-	init_ctx->ioch = spdk_bdev_get_io_channel(dev->base_bdev_desc);
-	if (!init_ctx->ioch) {
-		SPDK_ERRLOG("Failed to get base bdev IO channel\n");
-		return -1;
-	}
-
 	ftl_dev_get_zone_info(init_ctx);
 
 	return 0;
@@ -1088,7 +1070,6 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 		return -1;
 	}
 
-	ioch->cache_ioch = NULL;
 	ioch->index = FTL_IO_CHANNEL_INDEX_INVALID;
 	ioch->dev = dev;
 	ioch->elem_size = sizeof(struct ftl_md_io);
@@ -1101,20 +1082,6 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 		SPDK_ERRLOG("Failed to create IO channel's IO pool\n");
 		free(ioch);
 		return -1;
-	}
-
-	ioch->base_ioch = spdk_bdev_get_io_channel(dev->base_bdev_desc);
-	if (!ioch->base_ioch) {
-		SPDK_ERRLOG("Failed to create base bdev IO channel\n");
-		goto fail_ioch;
-	}
-
-	if (ftl_dev_has_nv_cache(dev)) {
-		ioch->cache_ioch = spdk_bdev_get_io_channel(dev->nv_cache.bdev_desc);
-		if (!ioch->cache_ioch) {
-			SPDK_ERRLOG("Failed to create cache IO channel\n");
-			goto fail_cache;
-		}
 	}
 
 	TAILQ_INIT(&ioch->write_cmpl_queue);
@@ -1138,12 +1105,6 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 fail_wbuf:
 	spdk_poller_unregister(&ioch->poller);
 fail_poller:
-	if (ioch->cache_ioch) {
-		spdk_put_io_channel(ioch->cache_ioch);
-	}
-fail_cache:
-	spdk_put_io_channel(ioch->base_ioch);
-fail_ioch:
 	spdk_mempool_free(ioch->io_pool);
 	free(ioch);
 
@@ -1200,15 +1161,6 @@ _ftl_io_channel_destroy_cb(void *ctx)
 	}
 
 	spdk_poller_unregister(&ioch->poller);
-
-	spdk_put_io_channel(ioch->base_ioch);
-	if (ioch->cache_ioch) {
-		spdk_put_io_channel(ioch->cache_ioch);
-	}
-
-	ioch->base_ioch = NULL;
-	ioch->cache_ioch = NULL;
-
 	spdk_thread_send_msg(ftl_get_core_thread(dev), ftl_io_channel_unregister, ioch);
 }
 
@@ -1311,6 +1263,12 @@ ftl_dev_init_base_bdev(struct spdk_ftl_dev *dev, const char *bdev_name)
 		spdk_bdev_close(dev->base_bdev_desc);
 		dev->base_bdev_desc = NULL;
 		SPDK_ERRLOG("Unable to claim bdev %s\n", bdev_name);
+		return -1;
+	}
+
+	dev->base_ioch = spdk_bdev_get_io_channel(dev->base_bdev_desc);
+	if (!dev->base_ioch) {
+		SPDK_ERRLOG("Failed to create base bdev IO channel\n");
 		return -1;
 	}
 
@@ -1448,6 +1406,10 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 	ftl_reloc_free(dev->reloc);
 
 	ftl_nv_cache_deinit(dev);
+	if (dev->base_ioch) {
+		spdk_put_io_channel(dev->base_ioch);
+		dev->base_ioch = NULL;
+	}
 	ftl_release_bdev(dev->base_bdev_desc);
 
 	spdk_free(dev->md_buf);
@@ -1470,118 +1432,178 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 	free(dev);
 }
 
-int
-spdk_ftl_dev_init(const struct spdk_ftl_dev_init_opts *_opts, spdk_ftl_init_fn cb_fn, void *cb_arg)
+static void
+spdk_ftl_dev_init_in_core_thread(void *arg)
 {
-	struct spdk_ftl_dev *dev;
-	struct spdk_ftl_dev_init_opts opts = *_opts;
-	struct ftl_dev_init_ctx *init_ctx = NULL;
-	int rc = -ENOMEM;
+	struct ftl_dev_init_ctx *init_ctx = arg;
+	struct spdk_ftl_dev *dev = init_ctx->dev;
 
-	dev = calloc(1, sizeof(*dev));
-	if (!dev) {
-		return -ENOMEM;
-	}
-
-	init_ctx = calloc(1, sizeof(*init_ctx));
-	if (!init_ctx) {
-		goto fail_sync;
-	}
-
-	init_ctx->dev = dev;
-	init_ctx->opts = *_opts;
-	init_ctx->cb_fn = cb_fn;
-	init_ctx->cb_arg = cb_arg;
-	init_ctx->thread = spdk_get_thread();
 	TAILQ_INIT(&dev->reloc_queue);
 
-	if (!opts.conf) {
-		opts.conf = &g_default_conf;
-	}
-
-	if (!opts.base_bdev) {
-		SPDK_ERRLOG("Lack of underlying device in configuration\n");
-		rc = -EINVAL;
-		goto fail_sync;
-	}
-
-	dev->conf = *opts.conf;
-	dev->limit = SPDK_FTL_LIMIT_MAX;
-
-	dev->name = strdup(opts.name);
-	if (!dev->name) {
-		SPDK_ERRLOG("Unable to set device name\n");
-		goto fail_sync;
-	}
-
-	if (ftl_dev_init_base_bdev(dev, opts.base_bdev)) {
+	if (ftl_dev_init_base_bdev(dev, init_ctx->opts.base_bdev)) {
 		SPDK_ERRLOG("Unsupported underlying device\n");
-		goto fail_sync;
-	}
-
-	if (opts.conf->l2p_path) {
-		dev->conf.l2p_path = strdup(opts.conf->l2p_path);
-		if (!dev->conf.l2p_path) {
-			rc = -ENOMEM;
-			goto fail_sync;
-		}
-	}
-
-	if (opts.conf->core_mask) {
-		dev->conf.core_mask = strdup(opts.conf->core_mask);
-		if (!dev->conf.core_mask) {
-			rc = -ENOMEM;
-			goto fail_sync;
-		}
+		goto fail;
 	}
 
 	/* In case of errors, we free all of the memory in ftl_dev_free_sync(), */
 	/* so we don't have to clean up in each of the init functions. */
-	if (ftl_check_conf(dev, opts.conf)) {
+	if (ftl_check_conf(dev, &dev->conf)) {
 		SPDK_ERRLOG("Invalid device configuration\n");
-		goto fail_sync;
+		goto fail;
 	}
 
 	if (ftl_init_lba_map_pools(dev)) {
 		SPDK_ERRLOG("Unable to init LBA map pools\n");
-		goto fail_sync;
+		goto fail;
 	}
 
 	if (ftl_init_media_events_pool(dev)) {
 		SPDK_ERRLOG("Unable to init media events pools\n");
-		goto fail_sync;
+		goto fail;
 	}
 
 	ftl_init_wptr_list(dev);
 
 	if (ftl_dev_init_bands(dev)) {
 		SPDK_ERRLOG("Unable to initialize band array\n");
-		goto fail_sync;
+		goto fail;
 	}
 
 	if (ftl_dev_init_io_channel(dev)) {
 		SPDK_ERRLOG("Unable to initialize IO channels\n");
-		goto fail_sync;
+		goto fail;
+	}
+
+	if (ftl_nv_cache_init(dev, init_ctx->opts.cache_bdev)) {
+		SPDK_ERRLOG("Unable to initialize persistent cache\n");
+		goto fail;
 	}
 
 	if (ftl_dev_init_zones(init_ctx)) {
 		SPDK_ERRLOG("Failed to initialize zones\n");
-		goto fail_async;
+		goto fail;
 	}
 
-	if (ftl_nv_cache_init(dev, opts.cache_bdev)) {
-		SPDK_ERRLOG("Unable to initialize persistent cache\n");
-		goto fail_sync;
-	}
-
-	return 0;
-fail_sync:
+	return;
+fail:
 	ftl_dev_free_sync(dev);
-	ftl_dev_free_init_ctx(init_ctx);
-	return rc;
-fail_async:
 	ftl_init_fail(init_ctx);
+	ftl_dev_free_init_ctx(init_ctx);
+}
+
+static int
+_cpy_ftl_dev_init_opts(struct spdk_ftl_dev_init_opts *dst,
+		const struct spdk_ftl_dev_init_opts *src)
+{
+	dst->base_bdev = strdup(src->base_bdev);
+	dst->cache_bdev = strdup(src->cache_bdev);
+	dst->name = strdup(src->name);
+
+	dst->conf = src->conf;
+	if (!dst->conf) {
+		dst->conf = &g_default_conf;
+	}
+
+	dst->mode = src->mode;
+	dst->uuid = src->uuid;
+
+	if (!dst->base_bdev || !dst->cache_bdev || !dst->name) {
+		free((void *)dst->base_bdev);
+		free((void *)dst->cache_bdev);
+		free((void *)dst->name);
+		return -ENOMEM;
+	}
+
 	return 0;
+}
+
+int
+spdk_ftl_dev_init(const struct spdk_ftl_dev_init_opts *_opts, spdk_ftl_init_fn cb_fn, void *cb_arg)
+{
+	int rc = -1;
+	struct spdk_ftl_dev *dev;
+	struct ftl_dev_init_ctx *init_ctx = NULL;
+
+	dev = calloc(1, sizeof(*dev));
+	if (!dev) {
+		rc = -ENOMEM;
+		goto ERROR;
+	}
+
+	init_ctx = calloc(1, sizeof(*init_ctx));
+	if (!init_ctx) {
+		rc = -ENOMEM;
+		goto ERROR;
+	}
+
+	rc = _cpy_ftl_dev_init_opts(&init_ctx->opts, _opts);
+	if (rc) {
+		goto ERROR;
+	}
+
+	init_ctx->dev = dev;
+	init_ctx->cb_fn = cb_fn;
+	init_ctx->cb_arg = cb_arg;
+	init_ctx->thread = spdk_get_thread();
+
+	if (!init_ctx->opts.conf) {
+		init_ctx->opts.conf = &g_default_conf;
+	}
+
+	if (!init_ctx->opts.base_bdev) {
+		SPDK_ERRLOG("Lack of underlying device in configuration\n");
+		rc = -EINVAL;
+		goto ERROR;
+	}
+
+	dev->conf = *init_ctx->opts.conf;
+	dev->limit = SPDK_FTL_LIMIT_MAX;
+
+	dev->name = strdup(init_ctx->opts.name);
+	if (!dev->name) {
+		rc = -ENOMEM;
+		goto ERROR;
+	}
+
+	if (init_ctx->opts.conf->l2p_path) {
+		dev->conf.l2p_path = strdup(init_ctx->opts.conf->l2p_path);
+		if (!dev->conf.l2p_path) {
+			rc = -ENOMEM;
+			goto ERROR;
+		}
+	}
+
+	if (init_ctx->opts.conf->core_mask) {
+		dev->conf.core_mask = strdup(init_ctx->opts.conf->core_mask);
+		if (!dev->conf.core_mask) {
+			rc = -ENOMEM;
+			goto ERROR;
+		}
+	}
+
+	rc = ftl_dev_init_core_thread(dev);
+	if (rc) {
+		goto ERROR;
+	}
+
+	spdk_thread_send_msg(dev->core_thread, spdk_ftl_dev_init_in_core_thread,
+			init_ctx);
+
+	return 0;
+
+ERROR:
+	if (dev) {
+		free(dev->name);
+		free((void *)dev->conf.l2p_path);
+		free((void *)dev->conf.core_mask);
+		free(dev);
+	}
+
+	if (init_ctx) {
+		free(init_ctx);
+	}
+
+	return rc;
 }
 
 static void
@@ -1622,7 +1644,7 @@ ftl_io_channel_release_cb(void *ctx)
 		spdk_thread_exit(dev->core_thread);
 	}
 
-	spdk_thread_send_msg(fini_ctx->thread, ftl_halt_complete_cb, ctx);
+	spdk_thread_send_msg(dev->core_thread, ftl_halt_complete_cb, ctx);
 }
 
 static void

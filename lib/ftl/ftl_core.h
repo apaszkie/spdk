@@ -129,7 +129,12 @@ struct spdk_ftl_dev {
 
 	/* Underlying device */
 	struct spdk_bdev_desc			*base_bdev_desc;
+
+	/* Underlying device IO channel */
+	struct spdk_io_channel			*base_ioch;
+
 	uint64_t				zone_size;
+
 	uint32_t				optimal_open_zones;
 
 	/* Non-volatile write buffer cache */

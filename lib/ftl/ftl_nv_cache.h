@@ -94,6 +94,9 @@ struct ftl_nv_cache {
 	/* Write buffer cache bdev */
 	struct spdk_bdev_desc *bdev_desc;
 
+	/* Persistent cache IO channel */
+	struct spdk_io_channel *cache_ioch;
+
 	/* Flag indicating NV cache is read */
 	bool ready;
 
