@@ -971,55 +971,12 @@ ftl_reloc_init(struct spdk_ftl_dev *dev)
 	TAILQ_INIT(&reloc->prio_queue);
 	STAILQ_INIT(&reloc->task_queue);
 
-	if (dev->conf.core_mask) {
-		struct spdk_cpuset cpumask = {}, tmp_cpumask = {};
-		char thread_name[32];
-		struct spdk_thread *thread;
-		bool skip_first = false;
-
-		if (spdk_cpuset_parse(&cpumask, dev->conf.core_mask)) {
-			goto error;
-		}
-
-		/* If user provide more than one core create relocation threads on next cores */
-		if (spdk_cpuset_count(&cpumask) > 1) {
-			skip_first = true;
-		}
-
-		SPDK_ENV_FOREACH_CORE(i) {
-			if (spdk_cpuset_get_cpu(&cpumask, i)) {
-				if (skip_first) {
-					skip_first = false;
-					continue;
-				}
-
-				spdk_cpuset_zero(&tmp_cpumask);
-				spdk_cpuset_set_cpu(&tmp_cpumask, i, true);
-				snprintf(thread_name, sizeof(thread_name), "ftl_reloc_thread_%lu", i);
-
-				thread = spdk_thread_create(thread_name, &tmp_cpumask);
-				if (!thread) {
-					goto error;
-				}
-
-				task = ftl_reloc_init_task(reloc, thread);
-				if (!task) {
-					spdk_thread_exit(thread);
-					goto error;
-				}
-
-				STAILQ_INSERT_TAIL(&reloc->task_queue, task, entry);
-				SPDK_NOTICELOG("Creating reloc thread on core: %lu\n", i);
-			}
-		}
-	} else {
-		task = ftl_reloc_init_task(reloc, dev->core_thread);
-		if (!task) {
-			goto error;
-		}
-
-		STAILQ_INSERT_TAIL(&reloc->task_queue, task, entry);
+	task = ftl_reloc_init_task(reloc, dev->core_thread);
+	if (!task) {
+		goto error;
 	}
+
+	STAILQ_INSERT_TAIL(&reloc->task_queue, task, entry);
 
 	return reloc;
 error:
