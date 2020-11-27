@@ -884,6 +884,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 	struct spdk_fio_thread *fio_thread = td->io_ops_data;
 	struct timespec t0, t1;
 	uint64_t timeout = 0;
+	uint64_t elapse;
 
 	if (t) {
 		timeout = t->tv_sec * SPDK_SEC_TO_NSEC + t->tv_nsec;
@@ -901,7 +902,7 @@ spdk_fio_getevents(struct thread_data *td, unsigned int min,
 
 		if (t) {
 			clock_gettime(CLOCK_MONOTONIC_RAW, &t1);
-			uint64_t elapse = ((t1.tv_sec - t0.tv_sec) * SPDK_SEC_TO_NSEC)
+			elapse = ((t1.tv_sec - t0.tv_sec) * SPDK_SEC_TO_NSEC)
 					  + t1.tv_nsec - t0.tv_nsec;
 			if (elapse > timeout) {
 				break;

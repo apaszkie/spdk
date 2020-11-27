@@ -293,6 +293,19 @@ ftl_init_lba_map_pools(struct spdk_ftl_dev *dev)
 	char pool_name[POOL_NAME_LEN];
 	int rc;
 
+	/*
+	 * Allocate ring for IO queue
+	 */
+	rc = snprintf(pool_name, sizeof(pool_name), "%s-io-queue", dev->name);
+		if (rc < 0 || rc >= POOL_NAME_LEN) {
+			return -ENAMETOOLONG;
+	}
+	dev->queue = spdk_ring_create(SPDK_RING_TYPE_MP_SC, 16384,
+			 SPDK_ENV_SOCKET_ID_ANY);
+	if (!dev->queue) {
+		return -ENOMEM;
+	}
+
 	rc = snprintf(pool_name, sizeof(pool_name), "%s-%s", dev->name, "ftl-lba-pool");
 	if (rc < 0 || rc >= POOL_NAME_LEN) {
 		return -ENAMETOOLONG;
@@ -1115,7 +1128,7 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 	ioch->io_pool = spdk_mempool_create(mempool_name,
 					    2 * dev->conf.user_io_pool_size,
 					    ioch->elem_size,
-					    0,
+					    dev->conf.user_io_pool_size,
 					    SPDK_ENV_SOCKET_ID_ANY);
 	if (!ioch->io_pool) {
 		SPDK_ERRLOG("Failed to create IO channel's IO pool\n");
@@ -1123,7 +1136,7 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 		return -1;
 	}
 
-	TAILQ_INIT(&ioch->write_cmpl_queue);
+	TAILQ_INIT(&ioch->cq);
 	TAILQ_INIT(&ioch->retry_queue);
 	ioch->poller = SPDK_POLLER_REGISTER(ftl_io_channel_poll, ioch, 0);
 	if (!ioch->poller) {

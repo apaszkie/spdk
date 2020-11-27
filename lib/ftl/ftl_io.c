@@ -345,18 +345,10 @@ ftl_io_erase_init(struct ftl_band *band, size_t num_blocks, ftl_io_fn cb)
 	return io;
 }
 
-static void _ftl_user_io_done(void *arg)
-{
-	struct ftl_io *io = arg;
-	io->user_fn(io->cb_ctx, io->status);
-}
-
-
 static void
 _ftl_user_cb(struct ftl_io *io, void *arg, int status)
 {
-	spdk_thread_send_msg(spdk_io_channel_get_thread(io->ioch),
-			     _ftl_user_io_done, io);
+	io->user_done = true;
 }
 
 int
@@ -426,6 +418,7 @@ ftl_io_complete(struct ftl_io *io)
 {
 	struct ftl_io *parent = io->parent;
 	bool complete;
+	bool internal = io->flags & FTL_IO_INTERNAL;
 
 	io->flags &= ~FTL_IO_INITIALIZED;
 
@@ -443,7 +436,9 @@ ftl_io_complete(struct ftl_io *io)
 			ftl_io_complete(parent);
 		}
 
-		_ftl_io_free(io);
+		if (internal) {
+			_ftl_io_free(io);
+		}
 	}
 }
 

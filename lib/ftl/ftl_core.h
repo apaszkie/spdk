@@ -127,6 +127,8 @@ struct spdk_ftl_dev {
 	bool					halt_started;
 	bool					reloc_halt_started;
 
+	struct spdk_ring			*queue;
+
 	/* Underlying device */
 	struct spdk_bdev_desc			*base_bdev_desc;
 

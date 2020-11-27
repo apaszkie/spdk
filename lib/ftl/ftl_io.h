@@ -186,7 +186,7 @@ struct ftl_io_channel {
 	/* Poller used for completing write requests and retrying IO */
 	struct spdk_poller			*poller;
 	/* Write completion queue */
-	TAILQ_HEAD(, ftl_io)			write_cmpl_queue;
+	TAILQ_HEAD(, ftl_io)			cq;
 	TAILQ_HEAD(, ftl_io)			retry_queue;
 	TAILQ_ENTRY(ftl_io_channel)		tailq;
 
@@ -274,6 +274,8 @@ struct ftl_io {
 	/* User callback function */
 	spdk_ftl_fn				user_fn;
 
+	volatile bool				user_done;
+
 	/* Flags */
 	int					flags;
 
@@ -296,7 +298,7 @@ struct ftl_io {
 	uint64_t				trace;
 
 	/* Used by retry and write completion queues */
-	TAILQ_ENTRY(ftl_io)			ioch_entry;
+	TAILQ_ENTRY(ftl_io)			queue_entry;
 
 	/* Reference to the chunk within NV cache */
 	struct ftl_nv_cache_chunk *nv_cache_chunk;
