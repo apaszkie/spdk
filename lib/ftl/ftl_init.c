@@ -403,19 +403,23 @@ ftl_init_bands_state(struct spdk_ftl_dev *dev)
 	return 0;
 }
 
-static void
-_ftl_dev_init_core_thread(void *ctx)
+static int
+_ftl_dev_init_core_thread(struct spdk_ftl_dev *dev)
 {
-	/* This now can be executed without message passing */
-	struct spdk_ftl_dev *dev = ctx;
-
 	dev->core_poller = SPDK_POLLER_REGISTER(ftl_task_core, dev, 0);
 	if (!dev->core_poller) {
 		SPDK_ERRLOG("Unable to register core poller\n");
-		assert(0);
+		return -ENOMEM;
 	}
 
 	dev->ioch = spdk_get_io_channel(dev);
+	if (!dev->ioch) {
+		SPDK_ERRLOG("Unable to get IO channel for core thread");
+		spdk_poller_unregister(dev->core_poller);
+		return -ENOMEM;
+	}
+
+	return 0;
 }
 
 static int
@@ -843,7 +847,10 @@ ftl_dev_init_state(struct ftl_dev_init_ctx *init_ctx)
 		return;
 	}
 
-	spdk_thread_send_msg(dev->core_thread, _ftl_dev_init_core_thread, dev);
+	if (_ftl_dev_init_core_thread(dev)) {
+		ftl_init_fail(init_ctx);
+		return;
+	}
 
 	if (init_ctx->opts.mode & SPDK_FTL_MODE_CREATE) {
 		if (ftl_setup_initial_state(init_ctx)) {
@@ -1074,7 +1081,7 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 	ioch->dev = dev;
 	ioch->elem_size = sizeof(struct ftl_md_io);
 	ioch->io_pool = spdk_mempool_create(mempool_name,
-					    dev->conf.user_io_pool_size,
+					    2 * dev->conf.user_io_pool_size,
 					    ioch->elem_size,
 					    0,
 					    SPDK_ENV_SOCKET_ID_ANY);

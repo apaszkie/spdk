@@ -65,8 +65,7 @@ struct ftl_reloc_task {
 
 	/* Thread on which relocation task is running */
 	struct spdk_thread			*thread;
-	/* IO channel for relocation reads/writes */
-	struct spdk_io_channel			*ioch;
+
 	/* Poller with movement logic */
 	struct spdk_poller			*poller;
 
@@ -460,7 +459,7 @@ ftl_reloc_io_init(struct ftl_band_reloc *breloc, struct ftl_reloc_move *move,
 		},
 		.iovcnt		= 1,
 		.cb_fn		= fn,
-		.ioch		= move->task->ioch,
+		.ioch		= dev->ioch,
 		.lba_vector	= move->lba_vector,
 	};
 
@@ -529,7 +528,7 @@ ftl_reloc_io_child_init(struct ftl_io *parent, struct ftl_band_reloc *breloc,
 		},
 		.iovcnt		= 1,
 		.cb_fn		= fn,
-		.ioch		= move->task->ioch,
+		.ioch		= dev->ioch,
 	};
 
 	io = ftl_io_init_internal(&opts);
@@ -830,21 +829,11 @@ static void
 _ftl_reloc_init_task(void *ctx)
 {
 	struct ftl_reloc_task *task = ctx;
-	struct spdk_ftl_dev *dev = task->reloc->dev;
-	struct ftl_io_channel *ioch;
 
 	task->poller = SPDK_POLLER_REGISTER(ftl_reloc_task_poller, task, 0);
 	if (!task->poller) {
 		SPDK_ERRLOG("Unable to register reloc poller\n");
 	}
-
-	task->ioch = spdk_get_io_channel(dev);
-	if (!task->ioch) {
-		SPDK_ERRLOG("Unable to create io channel for reloc task: %p\n", task);
-	}
-
-	ioch = ftl_io_channel_get_ctx(task->ioch);
-	ioch->reloc = true;
 }
 
 static struct ftl_reloc_task *
@@ -999,7 +988,6 @@ ftl_reloc_free_task(void *ctx)
 	struct spdk_ftl_dev *dev = reloc->dev;
 
 	spdk_poller_unregister(&task->poller);
-	spdk_put_io_channel(task->ioch);
 	spdk_ring_free(task->move_queue);
 
 	if (dev->conf.core_mask) {

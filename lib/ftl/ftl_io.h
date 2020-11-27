@@ -205,8 +205,6 @@ struct ftl_io_channel {
 	uint32_t				qdepth_current;
 	/* Means that the IO channel is being flushed */
 	bool					flush;
-
-	bool					reloc;
 };
 
 /* General IO descriptor */
