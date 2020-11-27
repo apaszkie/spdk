@@ -415,7 +415,7 @@ _ftl_dev_init_core_thread(struct spdk_ftl_dev *dev)
 	dev->ioch = spdk_get_io_channel(dev);
 	if (!dev->ioch) {
 		SPDK_ERRLOG("Unable to get IO channel for core thread");
-		spdk_poller_unregister(dev->core_poller);
+		spdk_poller_unregister(&dev->core_poller);
 		return -ENOMEM;
 	}
 
@@ -529,6 +529,37 @@ ftl_dev_l2p_alloc(struct spdk_ftl_dev *dev)
 	}
 }
 
+static void _deinit_ftl_dev_init_ops(const struct spdk_ftl_dev_init_opts *opts)
+{
+	free((void *)opts->base_bdev);
+	free((void *)opts->cache_bdev);
+	free((void *)opts->name);
+}
+
+static int
+_cpy_ftl_dev_init_opts(struct spdk_ftl_dev_init_opts *dst,
+		const struct spdk_ftl_dev_init_opts *src)
+{
+	dst->base_bdev = strdup(src->base_bdev);
+	dst->cache_bdev = strdup(src->cache_bdev);
+	dst->name = strdup(src->name);
+
+	dst->conf = src->conf;
+	if (!dst->conf) {
+		dst->conf = &g_default_conf;
+	}
+
+	dst->mode = src->mode;
+	dst->uuid = src->uuid;
+
+	if (!dst->base_bdev || !dst->cache_bdev || !dst->name) {
+		_deinit_ftl_dev_init_ops(dst);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
 static void
 ftl_dev_free_init_ctx(struct ftl_dev_init_ctx *init_ctx)
 {
@@ -536,7 +567,8 @@ ftl_dev_free_init_ctx(struct ftl_dev_init_ctx *init_ctx)
 		return;
 	}
 
-	free(init_ctx); // XXX
+	_deinit_ftl_dev_init_ops(&init_ctx->opts);
+	free(init_ctx);
 }
 
 static void
@@ -1496,32 +1528,6 @@ fail:
 	ftl_dev_free_sync(dev);
 	ftl_init_fail(init_ctx);
 	ftl_dev_free_init_ctx(init_ctx);
-}
-
-static int
-_cpy_ftl_dev_init_opts(struct spdk_ftl_dev_init_opts *dst,
-		const struct spdk_ftl_dev_init_opts *src)
-{
-	dst->base_bdev = strdup(src->base_bdev);
-	dst->cache_bdev = strdup(src->cache_bdev);
-	dst->name = strdup(src->name);
-
-	dst->conf = src->conf;
-	if (!dst->conf) {
-		dst->conf = &g_default_conf;
-	}
-
-	dst->mode = src->mode;
-	dst->uuid = src->uuid;
-
-	if (!dst->base_bdev || !dst->cache_bdev || !dst->name) {
-		free((void *)dst->base_bdev);
-		free((void *)dst->cache_bdev);
-		free((void *)dst->name);
-		return -ENOMEM;
-	}
-
-	return 0;
 }
 
 int

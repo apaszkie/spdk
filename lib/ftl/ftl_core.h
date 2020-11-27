@@ -496,7 +496,7 @@ ftl_l2p_set(struct spdk_ftl_dev *dev, uint64_t lba, struct ftl_addr addr)
 	}
 }
 
-static bool
+static inline bool
 ftl_check_core_thread(const struct spdk_ftl_dev *dev)
 {
 	return dev->core_thread == spdk_get_thread();
