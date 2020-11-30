@@ -109,9 +109,9 @@ static const struct spdk_ftl_conf	g_default_conf = {
 	/* 90% band fill threshold */
 	.band_thld = 90,
 	/* Max 256 IO depth per band relocate */
-	.max_reloc_qdepth = 64,
+	.max_reloc_qdepth = 128,
 	/* Max 3 active band relocates */
-	.max_active_relocs = 3,
+	.max_active_relocs = 4,
 	/* IO pool size per user thread (this should be adjusted to thread IO qdepth) */
 	.user_io_pool_size = 8192,
 	/*
