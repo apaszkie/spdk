@@ -1639,19 +1639,27 @@ _ftl_halt_defrag(void *arg)
 }
 
 static void
+ftl_halt_complete_cb_thread(void *ctx)
+{
+	struct ftl_dev_init_ctx *fini_ctx = ctx;
+
+	if (fini_ctx->cb_fn != NULL) {
+		fini_ctx->cb_fn(NULL, fini_ctx->cb_arg, fini_ctx->halt_complete_status);
+	}
+	ftl_dev_free_init_ctx(fini_ctx);
+}
+
+static void
 ftl_halt_complete_cb(void *ctx)
 {
 	struct ftl_dev_init_ctx *fini_ctx = ctx;
 	struct spdk_ftl_dev *dev = fini_ctx->dev;
 
 	spdk_io_device_unregister(dev, NULL);
-
 	ftl_dev_free_sync(fini_ctx->dev);
-	if (fini_ctx->cb_fn != NULL) {
-		fini_ctx->cb_fn(NULL, fini_ctx->cb_arg, fini_ctx->halt_complete_status);
-	}
 
-	ftl_dev_free_init_ctx(fini_ctx);
+	spdk_thread_send_msg(fini_ctx->thread, ftl_halt_complete_cb_thread,
+			fini_ctx);
 }
 
 static void
