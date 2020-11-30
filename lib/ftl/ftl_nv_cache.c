@@ -399,11 +399,17 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 
 static bool _is_compaction_required(struct ftl_nv_cache *nv_cache)
 {
+	uint64_t compacted, compacted_blocks, full;
+
 	if (nv_cache->ftl_dev->halt) {
 		return false;
 	}
 
-	if (nv_cache->chunk_full_count > nv_cache->chunk_compaction_threshold) {
+	compacted = nv_cache->compaction_active_count;
+	compacted_blocks = compacted * nv_cache->ftl_dev->xfer_size;
+
+	full = nv_cache->chunk_full_count - nv_cache->compaction_active_count;
+	if (full > nv_cache->chunk_compaction_threshold) {
 		return true;
 	}
 
