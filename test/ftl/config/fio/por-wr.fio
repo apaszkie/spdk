@@ -21,6 +21,6 @@ random_distribution=random
 bs=4k
 numjobs=4
 rw=randrw
-rwmixread=70
+rwmixread=0
 iodepth=64
 runtime=3600s
