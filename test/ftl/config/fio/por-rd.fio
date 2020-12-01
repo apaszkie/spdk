@@ -22,5 +22,5 @@ bs=4k
 numjobs=4
 rw=randrw
 rwmixread=100
-iodepth=256
+iodepth=64
 runtime=3600s
