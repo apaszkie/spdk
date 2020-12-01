@@ -1820,7 +1820,7 @@ ftl_process_writes(struct spdk_ftl_dev *dev)
 		}
 	}
 
-	if (num_active < 8) {
+	if (num_active < 1) {
 		ftl_add_wptr(dev);
 	}
 
