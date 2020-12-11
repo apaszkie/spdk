@@ -55,8 +55,7 @@ static struct ftl_nv_cache_compaction *compaction_alloc(
 static void compaction_free(struct spdk_ftl_dev *dev,
 			    struct ftl_nv_cache_compaction *compaction);
 
-static void compaction_process_ftl_done(struct spdk_ftl_dev *ftl,
-					struct ftl_batch *batch);
+static void compaction_process_ftl_done(struct ftl_rq *rq);
 
 static void compaction_process_start(
 	struct ftl_nv_cache_compaction *compaction);
@@ -399,13 +398,11 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 
 static bool _is_compaction_required(struct ftl_nv_cache *nv_cache)
 {
-	uint64_t compacted, full;
+	uint64_t full;
 
 	if (nv_cache->ftl_dev->halt) {
 		return false;
 	}
-
-	compacted = nv_cache->compaction_active_count;
 
 	full = nv_cache->chunk_full_count - nv_cache->compaction_active_count;
 	if (full > nv_cache->chunk_compaction_threshold) {
@@ -480,9 +477,10 @@ static struct ftl_nv_cache_chunk *get_chunk_for_compaction(
 	if (spdk_likely(chunk)) {
 		assert(chunk->write_pointer != 0);
 		TAILQ_INSERT_HEAD(&compaction->chunk_list, chunk, entry);
-		compaction->reader.iter.idx = 0;
-		compaction->reader.iter.count = 0;
-		compaction->reader.iter.rd_ptr = 0;
+
+		compaction->rd->iter.idx = 0;
+		compaction->rd->iter.count = 0;
+		compaction->rd_ptr = 0;
 	}
 
 	return chunk;
@@ -624,67 +622,29 @@ void ftl_nv_cache_commit_wr_buffer(struct ftl_nv_cache *nv_cache,
 static void compaction_free(struct spdk_ftl_dev *dev,
 			    struct ftl_nv_cache_compaction *compaction)
 {
-	uint64_t i;
-
 	if (!compaction) {
 		return;
 	}
 
-	if (compaction->payload) {
-		spdk_free(compaction->payload);
-	}
-
-	if (compaction->batch) {
-		for (i = 0; i < compaction->batch->num_entries; ++i) {
-			compaction->batch->iov[i].iov_base = NULL;
-			compaction->batch->iov[i].iov_len = 0;
-		}
-		compaction->batch->num_entries = 0;
-		TAILQ_INIT(&compaction->batch->entries);
-
-		TAILQ_INSERT_TAIL(&dev->free_batches, compaction->batch, tailq);
-	}
-
-	if (compaction->reader.payload) {
-		spdk_free(compaction->reader.payload);
-	}
-
-	if (compaction->reader.md) {
-		spdk_free(compaction->reader.md);
-	}
-
-	if (compaction->reader.iovec) {
-		free(compaction->reader.iovec);
-	}
-
+	ftl_rq_del(compaction->wr);
+	ftl_rq_del(compaction->rd);
 	free(compaction);
 }
 
-static struct ftl_nv_cache_block_metadata *compaction_get_metadata(
-	struct ftl_nv_cache_compaction *compaction, uint64_t idx)
+static void compaction_process_ftl_done(struct ftl_rq *rq)
 {
-	off_t offset = compaction->metadata_size * idx;
-	void *md_ptr = (compaction->reader.md + offset);
-
-	assert(idx < compaction->reader.max_count);
-
-	return (struct ftl_nv_cache_block_metadata *)(md_ptr);
-}
-
-static void compaction_process_ftl_done(struct spdk_ftl_dev *ftl,
-					struct ftl_batch *batch)
-{
+	struct spdk_ftl_dev *dev = rq->dev;
+	struct ftl_nv_cache_compaction *compaction = rq->owner.priv;
+	struct ftl_nv_cache *nv_cache = &dev->nv_cache;
+	struct ftl_rq_entry *entry = rq->entries;
 	uint64_t i;
-	struct ftl_nv_cache_compaction *compaction = batch->priv_data;
-	struct ftl_nv_cache *nv_cache = &ftl->nv_cache;
-	struct ftl_wbuf_entry *entry = compaction->entries;
 
-	for (i = 0; i < batch->num_entries; i++, entry++) {
-		struct ftl_nv_cache_chunk *chunk = entry->priv_data;
+	for (i = 0; i < rq->num_blocks; i++, entry++) {
+		struct ftl_nv_cache_chunk *chunk = entry->owner.priv;
 		chunk_compaction_advance(compaction, chunk);
 	}
 
-	compaction->batch_iter = 0;
+	compaction->wr->iter.idx = 0;
 
 	if (_is_compaction_required(nv_cache)) {
 		compaction_process_start(compaction);
@@ -697,17 +657,16 @@ static void compaction_process_ftl_done(struct spdk_ftl_dev *ftl,
 static void compaction_process_finish_read(struct ftl_nv_cache_compaction *compaction)
 {
 	struct spdk_ftl_dev *dev = compaction->nv_cache->ftl_dev;
-	struct ftl_wbuf_entry *iter;
-	const uint64_t num_entries = compaction->batch->num_entries;
+	struct ftl_rq_entry *iter;
+	const uint64_t num_entries = compaction->wr->num_blocks;
 	struct ftl_nv_cache_block_metadata *md;
 	struct ftl_addr current_addr = ftl_to_addr(FTL_ADDR_INVALID);
 	struct ftl_addr cached_addr = { .cached = true };
 
-	assert(compaction->batch_iter < num_entries);
-	assert(compaction->reader.iter.idx < compaction->reader.iter.count);
+	assert(compaction->wr->iter.idx < num_entries);
+	assert(compaction->rd->iter.idx < compaction->rd->iter.count);
 
-	iter = &compaction->entries[compaction->batch_iter];
-	md = compaction_get_metadata(compaction, compaction->reader.iter.idx);
+	iter = &compaction->wr->entries[compaction->wr->iter.idx];
 
 	/*
 	 * Calculate current position within cache for the chunk:
@@ -715,21 +674,19 @@ static void compaction_process_finish_read(struct ftl_nv_cache_compaction *compa
 	 * - Plus offset within reader (read pointer - read count)
 	 * - Plus current reader index of iterator
 	 */
-	cached_addr.cache_offset = compaction->reader.iter.chunk->offset;
-	cached_addr.cache_offset += compaction->reader.iter.rd_ptr;
-	cached_addr.cache_offset -= compaction->reader.iter.count;
-	cached_addr.cache_offset += compaction->reader.iter.idx;
+	cached_addr.cache_offset = compaction->current_chunk->offset;
+	cached_addr.cache_offset += compaction->rd_ptr;
+	cached_addr.cache_offset -= compaction->rd->iter.count;
+	cached_addr.cache_offset += compaction->rd->iter.idx;
 
-	while (compaction->batch_iter < num_entries &&
-		compaction->reader.iter.idx < compaction->reader.iter.count) {
+	while (compaction->wr->iter.idx < num_entries &&
+		compaction->rd->iter.idx < compaction->rd->iter.count) {
 
 		/* Get metadata */
-		md = compaction_get_metadata(compaction,
-						compaction->reader.iter.idx);
-
+		md = compaction->rd->entries[compaction->rd->iter.idx].io_md;
 		if (md->lba == FTL_LBA_INVALID) {
 			cached_addr.cache_offset++;
-			compaction->reader.iter.idx++;
+			compaction->rd->iter.idx++;
 			continue;
 		}
 
@@ -738,40 +695,35 @@ static void compaction_process_finish_read(struct ftl_nv_cache_compaction *compa
 			/*
 			 * Swap payload
 			 */
-			void *pnew = compaction->reader.iovec[compaction->reader.iter.idx].iov_base;
-			void *pold = compaction->batch->iov[compaction->batch_iter].iov_base;
-
-			compaction->reader.iovec[compaction->reader.iter.idx].iov_base = pold;
-			compaction->batch->iov[compaction->batch_iter].iov_base = pnew;
-			compaction->entries[compaction->batch_iter].payload = pnew;
-
+			ftl_rq_swap_payload(compaction->wr, compaction->wr->iter.idx,
+					compaction->rd, compaction->rd->iter.idx);
 			/*
 			 * Address still the same, we may continue to compact it back to
 			 * FTL, set valid number of entries within this batch
 			 */
 			iter->addr = current_addr;
-			iter->priv_data = compaction->reader.iter.chunk;
+			iter->owner.priv = compaction->current_chunk;
 			iter->lba = md->lba;
 
 			/* Advance within batch */
 			iter++;
-			compaction->batch_iter++;
+			compaction->wr->iter.idx++;
 		} else {
 			/* This address already invalidated, just omit this block */
 			chunk_compaction_advance(compaction,
-					compaction->reader.iter.chunk);
+					compaction->current_chunk);
 		}
 
 		/* Advance within reader */
-		compaction->reader.iter.idx++;
+		compaction->rd->iter.idx++;
 		cached_addr.cache_offset++;
 	}
 
-	if (num_entries == compaction->batch_iter) {
+	if (num_entries == compaction->wr->iter.idx) {
 		/*
-		 * Batch already collected, compact it
+		 *Request contains data to be placed on FTL, compact it
 		 */
-		TAILQ_INSERT_TAIL(&dev->pending_batches, compaction->batch, tailq);
+		ftl_writer_queue_rq(&dev->writer_user, compaction->wr);
 	} else {
 		struct ftl_nv_cache *nv_cache = compaction->nv_cache;
 
@@ -807,8 +759,8 @@ static void compaction_process_start(
 	uint64_t to_read, addr;
 
 	/* Check if all read blocks done */
-	assert(compaction->reader.iter.idx <= compaction->reader.iter.count);
-	if (compaction->reader.iter.idx < compaction->reader.iter.count) {
+	assert(compaction->rd->iter.idx <= compaction->rd->iter.count);
+	if (compaction->rd->iter.idx < compaction->rd->iter.count) {
 		compaction_process_finish_read(compaction);
 		return;
 	}
@@ -822,23 +774,23 @@ static void compaction_process_start(
 		TAILQ_INSERT_HEAD(&nv_cache->compaction_list, compaction, entry);
 		return;
 	}
-	compaction->reader.iter.chunk = chunk;
+	compaction->current_chunk = chunk;
 
 	/*
 	 * Get numbers of blocks to read
 	 */
-	compaction->reader.iter.count = chunk_blocks_to_read(chunk);
-	to_read = compaction->reader.iter.count = spdk_min(
-			compaction->reader.iter.count,
-			compaction->reader.max_count);
-	compaction->reader.iter.idx = 0;
+	compaction->rd->iter.count = chunk_blocks_to_read(chunk);
+	to_read = compaction->rd->iter.count = spdk_min(
+			compaction->rd->iter.count,
+			compaction->rd->num_blocks);
+	compaction->rd->iter.idx = 0;
 
 	/* Read data and metadata from NV cache */
-	addr = chunk->offset + compaction->reader.iter.rd_ptr;
+	addr = chunk->offset + compaction->rd_ptr;
 	rc = __spdk_bdev_readv_blocks_with_md(nv_cache, nv_cache->bdev_desc,
 			nv_cache->cache_ioch,
-			compaction->reader.iovec, to_read,
-			compaction->reader.md,
+			compaction->rd->io_vec, to_read,
+			compaction->rd->io_md,
 			addr, to_read,
 			compaction_process_read_cb, compaction);
 
@@ -857,82 +809,36 @@ static void compaction_process_start(
 	 * Move read pointer in chunk and reader
 	 */
 	chunk->read_pointer += to_read;
-	compaction->reader.iter.rd_ptr += to_read;
+	compaction->rd_ptr += to_read;
 }
 
 static struct ftl_nv_cache_compaction *compaction_alloc(
 	struct spdk_ftl_dev *dev)
 {
-	struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(dev->nv_cache.bdev_desc);
-	struct ftl_batch *batch;
 	struct ftl_nv_cache_compaction *compaction;
-	struct ftl_wbuf_entry *entry;
-	uint64_t i;
-	size_t size;
-	void *payload;
 
-	size =
-		sizeof(*compaction) + (sizeof(compaction->entries[0]) * dev->xfer_size);
-	compaction = calloc(1, size);
+	compaction = calloc(1, sizeof(*compaction));
 	if (!compaction) {
 		goto ERROR;
 	}
+
+	/* Allocate help request for writing */
+	compaction->wr = ftl_rq_new(dev, 0, dev->nv_cache.md_size);
+	if (!compaction->wr) {
+		goto ERROR;
+	}
+
+	/* Allocate help request for reading */
+	compaction->rd = ftl_rq_new(dev,
+			dev->conf.nv_cache.max_request_size,
+			dev->nv_cache.md_size);
+	if (!compaction->rd) {
+		goto ERROR;
+	}
+
 	compaction->nv_cache = &dev->nv_cache;
-	compaction->metadata_size = __spdk_bdev_get_md_size(bdev);
-
-	if (TAILQ_EMPTY(&dev->free_batches)) {
-		goto ERROR;
-	}
-
-	compaction->batch = batch = TAILQ_FIRST(&dev->free_batches);
-	TAILQ_REMOVE(&dev->free_batches, batch, tailq);
-	batch->num_entries = dev->xfer_size;
-	batch->priv_data = compaction;
-	batch->cb = compaction_process_ftl_done;
-
-	// Allocate payload for NV cache reads
-	compaction->reader.max_count = dev->conf.nv_cache.max_request_size;
-	payload = compaction->reader.payload = spdk_zmalloc(
-			FTL_BLOCK_SIZE * compaction->reader.max_count,
-			FTL_BLOCK_SIZE, NULL,
-			SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-	compaction->reader.md = spdk_zmalloc(
-			compaction->metadata_size * compaction->reader.max_count,
-			FTL_BLOCK_SIZE, NULL,
-			SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-	compaction->reader.iovec = calloc(compaction->reader.max_count,
-			sizeof(compaction->reader.iovec[0]));
-	if (!payload || !compaction->reader.iovec || !compaction->reader.md) {
-		goto ERROR;
-	}
-	for (i = 0; i < compaction->reader.max_count; ++i) {
-		compaction->reader.iovec[i].iov_base = payload;
-		compaction->reader.iovec[i].iov_len = FTL_BLOCK_SIZE;
-		payload += FTL_BLOCK_SIZE;
-	}
-
-	payload = compaction->payload = spdk_zmalloc(FTL_BLOCK_SIZE * batch->num_entries,
-		FTL_BLOCK_SIZE, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-	if (!payload) {
-		goto ERROR;
-	}
-
-        entry = compaction->entries;
-	for (i = 0; i < batch->num_entries; ++i, ++entry) {
-		entry->payload = payload;
-		payload += FTL_BLOCK_SIZE;
-
-		entry->addr.offset = FTL_ADDR_INVALID;
-		entry->lba = FTL_LBA_INVALID;
-		entry->addr.cached = true;
-		entry->index = i;
-		pthread_spin_init(&entry->lock, PTHREAD_PROCESS_PRIVATE);
-
-		batch->iov[i].iov_base = entry->payload;
-		batch->iov[i].iov_len = FTL_BLOCK_SIZE;
-
-		TAILQ_INSERT_TAIL(&batch->entries, entry, tailq);
-	}
+	compaction->wr->owner.priv = compaction;
+	compaction->wr->owner.cb = compaction_process_ftl_done;
 
 	TAILQ_INIT(&compaction->chunk_list);
 	return compaction;

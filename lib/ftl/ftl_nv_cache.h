@@ -38,6 +38,7 @@
 #include "spdk/assert.h"
 
 #include "ftl_io.h"
+#include "ftl_rq.h"
 
 #define FTL_NV_CACHE_HEADER_VERSION (1)
 #define FTL_NV_CACHE_DATA_OFFSET    (1)
@@ -65,26 +66,13 @@ struct ftl_nv_cache_chunk {
 };
 
 struct ftl_nv_cache_compaction {
-	struct ftl_batch *batch;
 	struct ftl_nv_cache *nv_cache;
-	uint64_t batch_iter;
+	struct ftl_rq *wr;
+	struct ftl_rq *rd;
+	struct ftl_nv_cache_chunk *current_chunk;
+	uint64_t rd_ptr;
 	TAILQ_HEAD(, ftl_nv_cache_chunk) chunk_list;
-	uint64_t metadata_size;
 	TAILQ_ENTRY(ftl_nv_cache_compaction) entry;
-	struct {
-		void *payload;
-		void *md;
-		uint64_t max_count;
-		struct iovec *iovec;
-		struct {
-			uint64_t idx;
-			uint64_t count;
-			uint64_t rd_ptr;
-			struct ftl_nv_cache_chunk *chunk;
-		} iter;
-	} reader ;
-	void *payload;
-	struct ftl_wbuf_entry entries[];
 };
 
 struct ftl_nv_cache {
