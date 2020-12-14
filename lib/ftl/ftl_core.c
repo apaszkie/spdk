@@ -429,7 +429,6 @@ ftl_md_write_cb(struct ftl_io *io, void *arg, int status)
 		ftl_remove_wptr(wptr);
 	}
 
-	dev->user_outstanding--;
 }
 
 static int
@@ -1409,6 +1408,11 @@ ftl_write_cb(struct ftl_io *io, void *arg, int status)
 	}
 
 	ftl_process_flush(dev, batch);
+	//
+	//when user io is done decrease stat user outstanding correctly here
+	//
+	dev->user_outstanding--;
+
 	ftl_release_batch(dev, batch);
 }
 
