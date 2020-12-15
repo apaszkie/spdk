@@ -56,9 +56,13 @@ struct ftl_writer {
 
 	/* List of full bands */
 	LIST_HEAD(, ftl_band) full_bands;
+
+	/* FTL band limit which blocks writes */
+	int limit;
 };
 
-void ftl_writer_init(struct spdk_ftl_dev *dev, struct ftl_writer *writer);
+void ftl_writer_init(struct spdk_ftl_dev *dev, struct ftl_writer *writer,
+		uint64_t limit);
 
 void ftl_writer_run(struct ftl_writer *writer);
 

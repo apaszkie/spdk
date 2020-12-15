@@ -93,13 +93,13 @@ static pthread_mutex_t			g_ftl_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static const struct spdk_ftl_conf	g_default_conf = {
 	.limits = {
 		/* 1 free bands  / 0 % host writes */
-		[SPDK_FTL_LIMIT_CRIT]  = { .thld = 1,  .limit = 0 },
+		[SPDK_FTL_LIMIT_CRIT]  = { .thld = 3,  .limit = 0 },
 		/* 3 free bands / 12 % host writes */
-		[SPDK_FTL_LIMIT_HIGH]  = { .thld = 3, .limit = 12 },
+		[SPDK_FTL_LIMIT_HIGH]  = { .thld = 7, .limit = 12 },
 		/* 7 free bands / 45 % host writes */
-		[SPDK_FTL_LIMIT_LOW]   = { .thld = 7, .limit = 45 },
+		[SPDK_FTL_LIMIT_LOW]   = { .thld = 10, .limit = 45 },
 		/* 10 free bands / 75 % host writes - defrag starts running */
-		[SPDK_FTL_LIMIT_START] = { .thld = 10, .limit = 75 },
+		[SPDK_FTL_LIMIT_START] = { .thld = 13, .limit = 75 },
 	},
 	/* 10 percent valid blocks */
 	.invalid_thld = 10,
@@ -1265,8 +1265,8 @@ ftl_dev_init_io_channel(struct spdk_ftl_dev *dev)
 	TAILQ_INIT(&dev->pending_batches);
 	TAILQ_INIT(&dev->ioch_queue);
 
-	ftl_writer_init(dev, &dev->writer_user);
-	ftl_writer_init(dev, &dev->writer_gc);
+	ftl_writer_init(dev, &dev->writer_user, SPDK_FTL_LIMIT_HIGH);
+	ftl_writer_init(dev, &dev->writer_gc, SPDK_FTL_LIMIT_CRIT);
 
 	for (i = 0; i < FTL_BATCH_COUNT; ++i) {
 		batch = &dev->batch_array[i];

@@ -37,13 +37,15 @@
 #include "ftl_band.h"
 #include "ftl_band_ops.h"
 
-void ftl_writer_init(struct spdk_ftl_dev *dev, struct ftl_writer *writer)
+void ftl_writer_init(struct spdk_ftl_dev *dev, struct ftl_writer *writer,
+		uint64_t limit)
 {
 	memset(writer, 0, sizeof(*writer));
 	writer->dev = dev;
 	TAILQ_INIT(&writer->rq_queue);
 	TAILQ_INIT(&writer->basic_rq_queue);
 	LIST_INIT(&writer->full_bands);
+	writer->limit = limit;
 }
 
 static bool _can_write(struct ftl_writer *writer) {
@@ -81,6 +83,10 @@ static void _close_full_bands(struct ftl_writer *writer)
 	}
 }
 
+static bool _is_limit(struct ftl_writer *writer) {
+	return writer->dev->limit < writer->limit;
+}
+
 static struct ftl_band *_get_band(struct ftl_writer *writer)
 {
 	if (spdk_likely(writer->next_band)) {
@@ -94,7 +100,7 @@ static struct ftl_band *_get_band(struct ftl_writer *writer)
 				ftl_band_open(writer->next_band);
 			}
 		}
-	} else {
+	} else if (!_is_limit(writer)) {
 		/* Get in the mean time next band */
 		writer->next_band = ftl_band_get_next_free(writer->dev);
 		if (writer->next_band) {
