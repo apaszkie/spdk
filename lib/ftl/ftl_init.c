@@ -93,13 +93,13 @@ static pthread_mutex_t			g_ftl_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static const struct spdk_ftl_conf	g_default_conf = {
 	.limits = {
 		/* 1 free bands  / 0 % host writes */
-		[SPDK_FTL_LIMIT_CRIT]  = { .thld = 3,  .limit = 0 },
+		[SPDK_FTL_LIMIT_CRIT]  = { .thld = 2,  .limit = 0 },
 		/* 3 free bands / 12 % host writes */
-		[SPDK_FTL_LIMIT_HIGH]  = { .thld = 7, .limit = 12 },
+		[SPDK_FTL_LIMIT_HIGH]  = { .thld = 3, .limit = 12 },
 		/* 7 free bands / 45 % host writes */
-		[SPDK_FTL_LIMIT_LOW]   = { .thld = 10, .limit = 45 },
+		[SPDK_FTL_LIMIT_LOW]   = { .thld = 7, .limit = 45 },
 		/* 10 free bands / 75 % host writes - defrag starts running */
-		[SPDK_FTL_LIMIT_START] = { .thld = 13, .limit = 75 },
+		[SPDK_FTL_LIMIT_START] = { .thld = 10, .limit = 75 },
 	},
 	/* 10 percent valid blocks */
 	.invalid_thld = 10,
