@@ -199,23 +199,11 @@ void ftl_band_open(struct ftl_band *band)
 static void _band_close_cb(struct ftl_basic_rq *brq)
 {
 	struct ftl_band *band = brq->io.band;
-	struct spdk_ftl_dev *dev = band->dev;
-	uint32_t id;
 
 	// XXX Provides additional check (e.g if write offset of tail metadata
 	// is correct)
 
 	if (spdk_likely(brq->success)) {
-		/* TODO(mbarczak) Do we need it? */
-		for (id = 0; id < ftl_get_num_bands(dev); ++id) {
-			if (spdk_bit_array_get(band->reloc_bitmap, id)) {
-				assert(dev->bands[id].num_reloc_bands > 0);
-				dev->bands[id].num_reloc_bands--;
-
-				spdk_bit_array_clear(band->reloc_bitmap, id);
-			}
-		}
-
 		ftl_band_set_state(band, FTL_BAND_STATE_CLOSED);
 	} else {
 		ftl_band_write_failed(band);

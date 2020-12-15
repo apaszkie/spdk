@@ -119,6 +119,9 @@ struct ftl_rq {
 struct ftl_basic_rq {
 	struct spdk_ftl_dev *dev;
 
+	/* Request queue entry */
+	TAILQ_ENTRY(ftl_basic_rq) qentry;
+
 	/* Number of block within the request */
 	uint64_t num_blocks;
 

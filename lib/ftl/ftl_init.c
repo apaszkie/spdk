@@ -1266,6 +1266,7 @@ ftl_dev_init_io_channel(struct spdk_ftl_dev *dev)
 	TAILQ_INIT(&dev->ioch_queue);
 
 	ftl_writer_init(dev, &dev->writer_user);
+	ftl_writer_init(dev, &dev->writer_gc);
 
 	for (i = 0; i < FTL_BATCH_COUNT; ++i) {
 		batch = &dev->batch_array[i];

@@ -42,7 +42,9 @@
 struct ftl_writer {
 	struct spdk_ftl_dev *dev;
 
-	TAILQ_HEAD(, ftl_rq) queue;
+	TAILQ_HEAD(, ftl_rq) rq_queue;
+
+	TAILQ_HEAD(, ftl_basic_rq) basic_rq_queue;
 
 	uint64_t queue_depth;
 
@@ -63,7 +65,13 @@ void ftl_writer_run(struct ftl_writer *writer);
 static inline void
 ftl_writer_queue_rq(struct ftl_writer *writer, struct ftl_rq *rq)
 {
-	TAILQ_INSERT_TAIL(&writer->queue, rq, qentry);
+	TAILQ_INSERT_TAIL(&writer->rq_queue, rq, qentry);
+}
+
+static inline void
+ftl_writer_queue_basic_rq(struct ftl_writer *writer, struct ftl_basic_rq *brq)
+{
+	TAILQ_INSERT_TAIL(&writer->basic_rq_queue, brq, qentry);
 }
 
 #endif  // FTL_WRITER_H

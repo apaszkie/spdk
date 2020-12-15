@@ -1940,13 +1940,34 @@ _handle_io(void *ctx)
 	}
 }
 
+static void _write_rq_cb(struct ftl_basic_rq *brq)
+{
+	struct ftl_io *io = brq->owner.priv;
+
+	io->status = brq->success ? 0 : -EIO;
+	io->addr = brq->io.addr;
+	ftl_io_complete(io);
+}
+
 static int
 ftl_submit_write_leaf(struct ftl_io *io)
 {
 	int rc;
 
 	if (io->flags & FTL_IO_WEAK) {
-		TAILQ_INSERT_TAIL(&io->dev->reloc_queue, io, queue_entry);
+		struct spdk_ftl_dev *dev = io->dev;
+		struct ftl_basic_rq *rq = &io->rq;
+
+		assert(io->iov_cnt == 1);
+
+		ftl_basic_rq_init(dev, rq, io->iov->iov_base, io->num_blocks);
+		ftl_basic_rq_set_owner(rq, _write_rq_cb, io);
+		ftl_writer_queue_basic_rq(&dev->writer_gc, rq);
+		ftl_io_advance(io, io->num_blocks);
+
+		dev->stats.write_total += io->num_blocks;
+		dev->reloc_outstanding++;
+
 		return 0;
 	}
 
@@ -2292,8 +2313,8 @@ ftl_task_core(void *ctx)
 
 	ftl_process_io_queue(dev);
 	ftl_writer_run(&dev->writer_user);
+	ftl_writer_run(&dev->writer_gc);
 
-	ftl_process_writes(dev);
 	ftl_process_relocs(dev);
 	ftl_nv_cache_compact(dev);
 

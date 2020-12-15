@@ -40,6 +40,7 @@
 
 #include "ftl_addr.h"
 #include "ftl_trace.h"
+#include "ftl_rq.h"
 
 struct spdk_ftl_dev;
 struct ftl_band;
@@ -306,6 +307,8 @@ struct ftl_io {
 	struct ftl_reloc_chunk			chunk[128];
 
 	size_t					num_chunks;
+
+	struct ftl_basic_rq			rq;
 };
 
 /* Metadata IO */

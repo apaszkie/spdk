@@ -258,6 +258,9 @@ struct spdk_ftl_dev {
 
 	/* Writer for user IOs */
 	struct ftl_writer writer_user;
+
+	/* Writer for GC IOs */
+	struct ftl_writer writer_gc;
 };
 
 struct ftl_nv_cache_header {

@@ -754,10 +754,6 @@ ftl_reloc_process_move_completions(struct ftl_reloc *reloc)
 		breloc = move->breloc;
 		pos = 0;
 
-		size_t num_blocks __attribute__((unused));
-		num_blocks = __atomic_fetch_sub(&breloc->band->num_reloc_blocks, dev->xfer_size, __ATOMIC_SEQ_CST);
-		assert(num_blocks > 0);
-
 		for (chunk_off = 0; chunk_off < move->num_chunks; ++chunk_off) {
 			addr = move->chunk_vector[chunk_off].addr;
 			for (j = 0; j < move->chunk_vector[chunk_off].num_blocks; ++j) {
