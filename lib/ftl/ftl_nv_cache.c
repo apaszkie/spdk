@@ -639,6 +639,15 @@ static void compaction_process_ftl_done(struct ftl_rq *rq)
 	struct ftl_rq_entry *entry = rq->entries;
 	uint64_t i;
 
+	if (spdk_unlikely(false == rq->success)) {
+		/* IO error retry writing */
+		ftl_writer_queue_rq(&dev->writer_user, rq);
+		return;
+	}
+
+	/* Update L2P table */
+	ftl_rq_update_l2p(rq);
+
 	for (i = 0; i < rq->num_blocks; i++, entry++) {
 		struct ftl_nv_cache_chunk *chunk = entry->owner.priv;
 		chunk_compaction_advance(compaction, chunk);
@@ -823,7 +832,7 @@ static struct ftl_nv_cache_compaction *compaction_alloc(
 	}
 
 	/* Allocate help request for writing */
-	compaction->wr = ftl_rq_new(dev, 0, dev->nv_cache.md_size);
+	compaction->wr = ftl_rq_new(dev, 0, dev->md_size);
 	if (!compaction->wr) {
 		goto ERROR;
 	}

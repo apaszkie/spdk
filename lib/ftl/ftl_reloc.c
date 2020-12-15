@@ -772,7 +772,7 @@ ftl_reloc_process_move_completions(struct ftl_reloc *reloc)
 					dest_band = ftl_band_from_addr(dev, move->dest_addr);
 					assert(dest_band != breloc->band);
 
-					ftl_update_l2p(reloc->dev, entry.lba, move->dest_addr, addr, true);
+					ftl_update_l2p(reloc->dev, entry.lba, move->dest_addr, addr);
 				}
 
 				move->dest_addr.offset++;

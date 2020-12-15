@@ -57,37 +57,6 @@ struct ftl_rq_entry {
 	struct {
 		void *priv;
 	} owner;
-
-//	/* IO channel that owns the write bufer entry */
-//	struct ftl_io_channel			*ioch;
-
-//	/* Index within the IO channel's wbuf_entries array */
-//	uint32_t				index;
-//	uint32_t				io_flags;
-//	/* Points at the band the data is copied from.  Only valid for internal
-//	 * requests coming from reloc.
-//	 */
-//	struct ftl_band				*band;
-//	/* Physical address of that particular block.  Valid once the data has
-//	 * been written out.
-//	 */
-//	struct ftl_addr				addr;
-//	/* Logical block address */
-//	uint64_t				lba;
-//
-//	/* Trace ID of the requests the entry is part of */
-//	uint64_t				trace;
-//
-//	/* Private data of the entry holder */
-//	void					*priv_data;
-//
-//	/* Indicates that the entry was written out and is still present in the
-//	 * L2P table.
-//	 */
-//	bool					valid;
-//	/* Lock that protects the entry from being evicted from the L2P */
-//	pthread_spinlock_t			lock;
-//	TAILQ_ENTRY(ftl_wbuf_entry)		tailq;
 };
 
 struct ftl_rq {
@@ -105,11 +74,17 @@ struct ftl_rq {
 	/* Size of extended metadata size for one entry */
 	uint64_t io_md_size;
 
-	/* Array of IO vectors, its size equals to num_blocks  */
+	/* Size of IO vector array */
+	uint64_t io_vec_size;
+
+	/* Array of IO vectors, its size equals to num_blocks */
 	struct iovec *io_vec;
 
 	/* Payload for IO */
 	void *io_payload;
+
+	/* Request result status */
+	bool success;
 
 	/* Fields for owner of this request */
 	struct {
@@ -126,7 +101,53 @@ struct ftl_rq {
 		uint32_t count;
 	} iter;
 
+	/* Private fields for issuing IO */
+	struct {
+		/* Request physical address, on IO completion set for append device */
+		struct ftl_addr addr;
+
+		/* Band to which IO is issued */
+		struct ftl_band *band;
+
+		/* Zone to which IO is issued */
+		struct ftl_zone *zone;
+	} io;
+
 	struct ftl_rq_entry entries[];
+};
+
+struct ftl_basic_rq {
+	struct spdk_ftl_dev *dev;
+
+	/* Number of block within the request */
+	uint64_t num_blocks;
+
+	/* Payload for IO */
+	void *io_payload;
+
+	/* Request result status */
+	bool success;
+
+	/* Fields for owner of this request */
+	struct {
+		/* End request callback */
+		void (*cb)(struct ftl_basic_rq *brq);
+
+		/* Owner context */
+		void *priv;
+	} owner;
+
+	/* Private fields for issuing IO */
+	struct {
+		/* Request physical address, on IO completion set for append device */
+		struct ftl_addr addr;
+
+		/* Band to which IO is issued */
+		struct ftl_band *band;
+
+		/* Zone to which IO is issued */
+		struct ftl_zone *zone;
+	} io;
 };
 
 /**
@@ -144,13 +165,30 @@ struct ftl_rq {
 struct ftl_rq *ftl_rq_new(struct spdk_ftl_dev *dev, uint32_t num_blocks,
 		uint32_t io_md_size);
 
+
+static inline void ftl_basic_rq_init(struct spdk_ftl_dev *dev,
+		struct ftl_basic_rq *brq,
+		void *io_payload, uint64_t num_blocks)
+{
+	brq->dev = dev;
+	brq->io_payload = io_payload;
+	brq->num_blocks = num_blocks;
+	brq->success = false;
+}
+
+static inline void ftl_basic_rq_set_owner(struct ftl_basic_rq *brq,
+		void (*cb)(struct ftl_basic_rq *brq), void *priv)
+{
+	brq->owner.cb = cb;
+	brq->owner.priv = priv;
+}
+
 /**
  * @brief Delete FTL request
  *
  * @param rq FTL request to be deleted
  */
 void ftl_rq_del(struct ftl_rq *rq);
-
 
 static inline void
 ftl_rq_swap_payload(struct ftl_rq *a, uint32_t aidx,
@@ -168,5 +206,15 @@ ftl_rq_swap_payload(struct ftl_rq *a, uint32_t aidx,
 	b->io_vec[bidx].iov_base = a_payload;
 	b->entries[bidx].io_payload = a_payload;
 }
+
+/**
+ * @brief Update L2P table on the basis of finished write FTL request
+ *
+ * @note New L2P location is stored in rq.io.addr
+ * @note Previous L2P locations have to be coded in rq.entries[i].addr
+ *
+ * @param rq FTL request
+ */
+void ftl_rq_update_l2p(struct ftl_rq *rq);
 
 #endif  // FTL_RQ_H

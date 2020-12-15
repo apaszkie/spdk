@@ -49,6 +49,7 @@
 #include "ftl_reloc.h"
 #include "ftl_band.h"
 #include "ftl_debug.h"
+#include "ftl_band_ops.h"
 
 #ifdef SPDK_CONFIG_PMDK
 #include "libpmem.h"
@@ -1264,6 +1265,8 @@ ftl_dev_init_io_channel(struct spdk_ftl_dev *dev)
 	TAILQ_INIT(&dev->pending_batches);
 	TAILQ_INIT(&dev->ioch_queue);
 
+	ftl_writer_init(dev, &dev->writer_user);
+
 	for (i = 0; i < FTL_BATCH_COUNT; ++i) {
 		batch = &dev->batch_array[i];
 		batch->iov = &dev->iov_buf[i * dev->xfer_size];
@@ -1447,7 +1450,7 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 		}
 	}
 
-	spdk_mempool_free(dev->lba_pool);
+ 	spdk_mempool_free(dev->lba_pool);
 	spdk_mempool_free(dev->nv_cache.md_pool);
 	spdk_mempool_free(dev->media_events_pool);
 	if (dev->lba_request_pool) {

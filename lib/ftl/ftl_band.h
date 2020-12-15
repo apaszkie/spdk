@@ -42,6 +42,7 @@
 #include "ftl_io.h"
 #include "ftl_addr.h"
 #include "ftl_core.h"
+#include "ftl_rq.h"
 
 /* Number of LBAs that could be stored in a single block */
 #define FTL_NUM_LBA_IN_BLOCK	(FTL_BLOCK_SIZE / sizeof(uint64_t))
@@ -130,9 +131,35 @@ struct ftl_lba_map_request {
 	LIST_ENTRY(ftl_lba_map_request)		list_entry;
 };
 
+struct ftl_band_iter {
+	/* Current address */
+	struct ftl_addr addr;
+
+	/* Current logical block's offset */
+	uint64_t offset;
+
+	/* Current zone */
+	struct ftl_zone *zone;
+
+	/* IO queue depth (outstanding IOs) */
+	uint64_t queue_depth;
+};
+
+typedef void (*ftl_band_state_change_fn)(struct ftl_band *band);
+
 struct ftl_band {
 	/* Device this band belongs to */
 	struct spdk_ftl_dev			*dev;
+
+	/* Band iterator for writing */
+	struct ftl_band_iter 			iter;
+
+	/* Fields for owner of the band */
+	struct {
+		void *priv;
+
+		ftl_band_state_change_fn state_change_fn;
+	} owner;
 
 	/* Number of operational zones */
 	size_t					num_zones;
@@ -167,6 +194,9 @@ struct ftl_band {
 
 	/* End metadata start addr */
 	struct ftl_addr				tail_md_addr;
+
+	/* Metadata request */
+	struct ftl_basic_rq			metadata_rq;
 
 	/* Bitmap of all bands that have its data moved onto this band */
 	struct spdk_bit_array			*reloc_bitmap;
@@ -220,6 +250,29 @@ struct ftl_zone *ftl_band_next_operational_zone(struct ftl_band *band,
 size_t		ftl_lba_map_pool_elem_size(struct spdk_ftl_dev *dev);
 void		ftl_band_remove_zone(struct ftl_band *band, struct ftl_zone *zone);
 
+struct ftl_band *ftl_band_get_next_free(struct spdk_ftl_dev *dev);
+
+static inline void ftl_band_set_owner(struct ftl_band *band,
+                                      ftl_band_state_change_fn fn,
+                                      void *priv)
+{
+	assert(NULL == band->owner.priv);
+	assert(NULL == band->owner.state_change_fn);
+
+	band->owner.state_change_fn = fn;
+	band->owner.priv = priv;
+}
+
+static inline void ftl_band_clear_owner(struct ftl_band *band,
+                                      ftl_band_state_change_fn fn,
+                                      void *priv)
+{
+	assert(priv == band->owner.priv);
+	assert(fn == band->owner.state_change_fn);
+
+	band->owner.state_change_fn = NULL;
+	band->owner.priv = NULL;
+}
 
 static inline int
 ftl_band_empty(const struct ftl_band *band)
@@ -283,5 +336,9 @@ ftl_zone_is_writable(const struct spdk_ftl_dev *dev, const struct ftl_zone *zone
 		zone->info.state == SPDK_BDEV_ZONE_STATE_EMPTY) &&
 	       !busy;
 }
+
+void ftl_band_md_pack_head(struct ftl_band *band);
+
+void ftl_band_md_pack_tail(struct ftl_band *band);
 
 #endif /* FTL_BAND_H */

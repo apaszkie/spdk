@@ -38,7 +38,8 @@ SO_VER := 3
 SO_MINOR := 0
 
 C_SRCS = ftl_band.c ftl_core.c ftl_debug.c ftl_io.c ftl_reloc.c \
-	 ftl_restore.c ftl_init.c ftl_trace.c ftl_nv_cache.c
+	 ftl_restore.c ftl_init.c ftl_trace.c ftl_nv_cache.c ftl_rq.c ftl_writer.c \
+	 ftl_band_ops.c
 
 SPDK_MAP_FILE = $(abspath $(CURDIR)/spdk_ftl.map)
 

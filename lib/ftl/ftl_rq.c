@@ -36,6 +36,7 @@
 
 #include "ftl_rq.h"
 #include "ftl_core.h"
+#include "ftl_band.h"
 
 struct ftl_rq *ftl_rq_new(struct spdk_ftl_dev *dev, uint32_t num_blocks,
 		uint32_t io_md_size)
@@ -70,6 +71,7 @@ struct ftl_rq *ftl_rq_new(struct spdk_ftl_dev *dev, uint32_t num_blocks,
 	if (!rq->io_vec) {
 		goto ERROR;
 	}
+	rq->io_vec_size = num_blocks;
 
 	/* Allocate extended metadata for IO */
 	if (io_md_size) {
@@ -124,4 +126,18 @@ void ftl_rq_del(struct ftl_rq *rq)
 	}
 
 	free(rq);
+}
+
+void ftl_rq_update_l2p(struct ftl_rq *rq)
+{
+	struct spdk_ftl_dev *dev = rq->dev;
+	struct ftl_rq_entry *iter = rq->entries;
+	struct ftl_addr addr = rq->io.addr;
+	struct ftl_band *band= rq->io.band;
+	uint64_t i;
+
+	for (i = 0; i < rq->num_blocks; i++, iter++) {
+		ftl_update_l2p(dev, iter->lba, addr, iter->addr);
+		addr = ftl_band_next_addr(band, addr, 1);
+	}
 }

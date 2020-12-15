@@ -258,8 +258,8 @@ ftl_set_md_hdr(struct ftl_band *band, struct ftl_md_hdr *hdr, size_t size)
 	hdr->checksum = ftl_md_calc_crc(hdr, size);
 }
 
-static int
-ftl_pack_head_md(struct ftl_band *band)
+void
+ftl_band_md_pack_head(struct ftl_band *band)
 {
 	struct spdk_ftl_dev *dev = band->dev;
 	struct ftl_head_md *head = band->lba_map.dma_buf;
@@ -268,12 +268,10 @@ ftl_pack_head_md(struct ftl_band *band)
 	head->lba_cnt = dev->num_lbas;
 	head->xfer_size = dev->xfer_size;
 	ftl_set_md_hdr(band, &head->hdr, sizeof(struct ftl_head_md));
-
-	return FTL_MD_SUCCESS;
 }
 
-static int
-ftl_pack_tail_md(struct ftl_band *band)
+void
+ftl_band_md_pack_tail(struct ftl_band *band)
 {
 	struct spdk_ftl_dev *dev = band->dev;
 	struct ftl_lba_map *lba_map = &band->lba_map;
@@ -291,8 +289,6 @@ ftl_pack_tail_md(struct ftl_band *band)
 	pthread_spin_unlock(&lba_map->lock);
 
 	ftl_set_md_hdr(band, &tail->hdr, ftl_tail_md_num_blocks(dev) * FTL_BLOCK_SIZE);
-
-	return FTL_MD_SUCCESS;
 }
 
 static int
@@ -667,6 +663,7 @@ ftl_band_alloc_lba_map(struct ftl_band *band)
 	lba_map->segments = (char *)lba_map->dma_buf + ftl_tail_md_num_blocks(dev) * FTL_BLOCK_SIZE;
 
 	ftl_band_acquire_lba_map(band);
+	//ftl_band_clear_lba_map(band);
 	return 0;
 }
 
@@ -765,7 +762,7 @@ ftl_io_init_md_write(struct spdk_ftl_dev *dev, struct ftl_band *band,
 
 static int
 ftl_band_write_md(struct ftl_band *band, size_t num_blocks,
-		  ftl_md_pack_fn md_fn, ftl_io_fn cb)
+		void (*md_fn)(struct ftl_band *), ftl_io_fn cb)
 {
 	struct spdk_ftl_dev *dev = band->dev;
 	struct ftl_io *io;
@@ -794,14 +791,14 @@ int
 ftl_band_write_head_md(struct ftl_band *band, ftl_io_fn cb)
 {
 	return ftl_band_write_md(band, ftl_head_md_num_blocks(band->dev),
-				 ftl_pack_head_md, cb);
+			ftl_band_md_pack_head, cb);
 }
 
 int
 ftl_band_write_tail_md(struct ftl_band *band, ftl_io_fn cb)
 {
 	return ftl_band_write_md(band, ftl_tail_md_num_blocks(band->dev),
-				 ftl_pack_tail_md, cb);
+			ftl_band_md_pack_tail, cb);
 }
 
 static struct ftl_addr
@@ -1047,6 +1044,11 @@ ftl_band_write_prep(struct ftl_band *band)
 	if (ftl_band_alloc_lba_map(band)) {
 		return -1;
 	}
+
+	/* Initialize band iterator to begin state */
+	band->iter.zone = CIRCLEQ_FIRST(&band->zones);
+	band->iter.addr.offset = band->iter.zone->info.zone_id;
+	band->iter.offset = 0;
 
 	band->seq = ++dev->seq;
 	return 0;

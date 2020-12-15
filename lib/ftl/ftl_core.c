@@ -46,7 +46,6 @@
 #include "ftl_io.h"
 #include "ftl_debug.h"
 #include "ftl_reloc.h"
-#include "ftl_nv_cache.h"
 
 struct ftl_band_flush {
 	struct spdk_ftl_dev		*dev;
@@ -1231,7 +1230,7 @@ ftl_update_nv_cache_l2p_update(struct ftl_io *io)
 	uint64_t end_block = lba + io->num_blocks;
 
 	do {
-		ftl_update_l2p(dev, lba, next_addr, weak_addr, false);
+		ftl_update_l2p(dev, lba, next_addr, weak_addr);
 		next_addr.cache_offset++;
 	} while (++lba < end_block);
 }
@@ -1392,8 +1391,7 @@ ftl_write_cb(struct ftl_io *io, void *arg, int status)
 
 	TAILQ_FOREACH(entry, &batch->entries, tailq) {
 		if (entry->lba != FTL_LBA_INVALID) {
-			ftl_update_l2p(dev, entry->lba, addr, entry->addr,
-				       true);
+			ftl_update_l2p(dev, entry->lba, addr, entry->addr);
 		}
 
 		SPDK_DEBUGLOG(SPDK_LOG_FTL_CORE, "Write addr:%lu, lba:%lu\n",
@@ -1417,9 +1415,8 @@ ftl_update_stats(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry)
 
 void
 ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
-	       struct ftl_addr new_addr, struct ftl_addr weak_addr, bool io_weak)
+	       struct ftl_addr new_addr, struct ftl_addr weak_addr)
 {
-
 	struct ftl_addr prev_addr;
 
 	assert(ftl_check_core_thread(dev));
@@ -1466,8 +1463,6 @@ ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
 			ftl_invalidate_addr(dev, weak_addr);
 		}
 	}
-
-	return;
 }
 
 static struct ftl_io *
@@ -1698,7 +1693,7 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 		ftl_wptr_pad_band(wptr);
 	}
 
-	/* Do not proceed user wirtes when only one band left */
+	/* Do not proceed user writes when only one band left */
 	if (dev->limit == SPDK_FTL_LIMIT_CRIT && !dev->halt) {
 		dev->stats.one_band++;
 		goto reloc;
@@ -2296,11 +2291,31 @@ ftl_task_core(void *ctx)
 	}
 
 	ftl_process_io_queue(dev);
+	ftl_writer_run(&dev->writer_user);
+
 	ftl_process_writes(dev);
 	ftl_process_relocs(dev);
 	ftl_nv_cache_compact(dev);
 
 	return 0;
+}
+
+struct ftl_band *ftl_band_get_next_free(struct spdk_ftl_dev *dev)
+{
+	struct ftl_band *band;
+
+	/* Find a free band that has all of its data moved onto other closed bands */
+	LIST_FOREACH(band, &dev->free_bands, list_entry) {
+		assert(band->state == FTL_BAND_STATE_FREE);
+		if (band->num_reloc_bands == 0 &&
+		    __atomic_load_n(&band->num_reloc_blocks, __ATOMIC_SEQ_CST) == 0) {
+
+			ftl_band_erase(band);
+			return band;
+		}
+	}
+
+	return NULL;
 }
 
 SPDK_LOG_REGISTER_COMPONENT("ftl_core", SPDK_LOG_FTL_CORE)

@@ -49,6 +49,8 @@
 #include "ftl_io.h"
 #include "ftl_trace.h"
 #include "ftl_nv_cache.h"
+#include "ftl_rq.h"
+#include "ftl_writer.h"
 
 #ifdef SPDK_CONFIG_PMDK
 #include "libpmem.h"
@@ -64,6 +66,7 @@ struct ftl_flush;
 struct ftl_reloc;
 struct ftl_anm_event;
 struct ftl_band_flush;
+struct ftl_rq;
 
 struct ftl_stats {
 	/* Number of writes scheduled directly by the user */
@@ -248,6 +251,13 @@ struct spdk_ftl_dev {
 
 	/* Devices' list */
 	STAILQ_ENTRY(spdk_ftl_dev)		stailq;
+
+	/*######################################################################
+	 * Needed fields below
+	 */
+
+	/* Writer for user IOs */
+	struct ftl_writer writer_user;
 };
 
 struct ftl_nv_cache_header {
@@ -553,7 +563,6 @@ ftl_is_append_supported(const struct spdk_ftl_dev *dev)
 
 void
 ftl_update_l2p(struct spdk_ftl_dev *dev, uint64_t lba,
-	       struct ftl_addr new_addr, struct ftl_addr weak_addr,
-	       bool io_weak);
+	       struct ftl_addr new_addr, struct ftl_addr weak_addr);
 
 #endif /* FTL_CORE_H */
