@@ -218,12 +218,6 @@ ftl_dev_init_bands(struct spdk_ftl_dev *dev)
 			SPDK_ERRLOG("Failed to initialize metadata structures for band [%u]\n", i);
 			break;
 		}
-
-		band->reloc_bitmap = spdk_bit_array_create(ftl_get_num_bands(dev));
-		if (!band->reloc_bitmap) {
-			SPDK_ERRLOG("Failed to allocate band relocation bitmap\n");
-			break;
-		}
 	}
 
 	return rc;
@@ -1447,7 +1441,6 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 		for (i = 0; i < ftl_get_num_bands(dev); ++i) {
 			free(dev->bands[i].zone_buf);
 			spdk_bit_array_free(&dev->bands[i].lba_map.vld);
-			spdk_bit_array_free(&dev->bands[i].reloc_bitmap);
 		}
 	}
 

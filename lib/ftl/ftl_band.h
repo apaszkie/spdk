@@ -198,13 +198,6 @@ struct ftl_band {
 	/* Metadata request */
 	struct ftl_basic_rq			metadata_rq;
 
-	/* Bitmap of all bands that have its data moved onto this band */
-	struct spdk_bit_array			*reloc_bitmap;
-	/* Number of open bands containing data moved from this band */
-	size_t					num_reloc_bands;
-	/* Number of blocks currently being moved from this band */
-	int					num_reloc_blocks;
-
 	/* Free/shut bands' lists */
 	LIST_ENTRY(ftl_band)			list_entry;
 

@@ -399,7 +399,6 @@ ftl_md_write_cb(struct ftl_io *io, void *arg, int status)
 	struct spdk_ftl_dev *dev = io->dev;
 	struct ftl_band *band = io->band;
 	struct ftl_wptr *wptr;
-	size_t id;
 
 	wptr = ftl_wptr_from_band(band);
 	assert(wptr);
@@ -411,20 +410,6 @@ ftl_md_write_cb(struct ftl_io *io, void *arg, int status)
 
 	ftl_band_set_next_state(band);
 	if (band->state == FTL_BAND_STATE_CLOSED) {
-		/*
-		 * Go through the reloc_bitmap, checking for all the bands that had its data moved
-		 * onto current band and update their counters to allow them to be used for writing
-		 * (once they're closed and empty).
-		 */
-		for (id = 0; id < ftl_get_num_bands(dev); ++id) {
-			if (spdk_bit_array_get(band->reloc_bitmap, id)) {
-				assert(dev->bands[id].num_reloc_bands > 0);
-				dev->bands[id].num_reloc_bands--;
-
-				spdk_bit_array_clear(band->reloc_bitmap, id);
-			}
-		}
-
 		ftl_remove_wptr(wptr);
 	}
 
@@ -608,38 +593,12 @@ ftl_band_erase(struct ftl_band *band)
 }
 
 static struct ftl_band *
-ftl_next_write_band(struct spdk_ftl_dev *dev)
-{
-	struct ftl_band *band;
-
-	/* Find a free band that has all of its data moved onto other closed bands */
-	LIST_FOREACH(band, &dev->free_bands, list_entry) {
-		assert(band->state == FTL_BAND_STATE_FREE);
-		if (band->num_reloc_bands == 0 &&
-		    __atomic_load_n(&band->num_reloc_blocks, __ATOMIC_SEQ_CST) == 0) {
-			break;
-		}
-	}
-
-	if (spdk_unlikely(!band)) {
-		return NULL;
-	}
-
-	if (ftl_band_erase(band)) {
-		/* TODO: handle erase failure */
-		return NULL;
-	}
-
-	return band;
-}
-
-static struct ftl_band *
 ftl_next_wptr_band(struct spdk_ftl_dev *dev)
 {
 	struct ftl_band *band;
 
 	if (!dev->next_band) {
-		band = ftl_next_write_band(dev);
+		band = ftl_band_get_next_free(dev);
 	} else {
 		assert(dev->next_band->state == FTL_BAND_STATE_PREP);
 		band = dev->next_band;
@@ -780,7 +739,7 @@ ftl_wptr_advance(struct ftl_wptr *wptr, size_t xfer_size)
 		      wptr->addr.offset);
 
 	if (wptr->offset >= next_thld && !dev->next_band) {
-		dev->next_band = ftl_next_write_band(dev);
+		dev->next_band = ftl_band_get_next_free(dev);
 	}
 }
 
@@ -1737,14 +1696,6 @@ ftl_wptr_process_writes(struct ftl_wptr *wptr)
 	}
 
 	TAILQ_FOREACH(entry, &batch->entries, tailq) {
-		/* Update band's relocation stats if the IO comes from reloc */
-		if (entry->io_flags & FTL_IO_WEAK) {
-			if (!spdk_bit_array_get(wptr->band->reloc_bitmap, entry->band->id)) {
-				spdk_bit_array_set(wptr->band->reloc_bitmap, entry->band->id);
-				entry->band->num_reloc_bands++;
-			}
-		}
-
 		ftl_trace_wbuf_pop(dev, entry);
 		ftl_update_stats(dev, entry);
 	}
@@ -1779,13 +1730,6 @@ reloc:
 		}
 		dev->stats.write_total += dev->xfer_size;
 		dev->reloc_outstanding++;
-
-		__atomic_fetch_add(&io->band->num_reloc_blocks, dev->xfer_size, __ATOMIC_SEQ_CST);
-		if (!spdk_bit_array_get(wptr->band->reloc_bitmap, io->band->id)) {
-			spdk_bit_array_set(wptr->band->reloc_bitmap, io->band->id);
-			io->band->num_reloc_bands++;
-		}
-
 	} else {
 		dev->stats.reloc_idle++;
 	}
@@ -2323,20 +2267,21 @@ ftl_task_core(void *ctx)
 
 struct ftl_band *ftl_band_get_next_free(struct spdk_ftl_dev *dev)
 {
-	struct ftl_band *band;
+	struct ftl_band *band = NULL;
 
-	/* Find a free band that has all of its data moved onto other closed bands */
-	LIST_FOREACH(band, &dev->free_bands, list_entry) {
-		assert(band->state == FTL_BAND_STATE_FREE);
-		if (band->num_reloc_bands == 0 &&
-		    __atomic_load_n(&band->num_reloc_blocks, __ATOMIC_SEQ_CST) == 0) {
+	if (!LIST_EMPTY(&dev->free_bands)) {
+		band = LIST_FIRST(&dev->free_bands);
+		LIST_REMOVE(band, list_entry);
 
-			ftl_band_erase(band);
-			return band;
+		if (ftl_band_erase(band)) {
+			/* TODO */
+			abort();
+			LIST_INSERT_HEAD(&dev->free_bands, band, list_entry);
+			return NULL;
 		}
 	}
 
-	return NULL;
+	return band;
 }
 
 SPDK_LOG_REGISTER_COMPONENT("ftl_core", SPDK_LOG_FTL_CORE)
