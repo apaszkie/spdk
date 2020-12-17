@@ -906,8 +906,10 @@ error:
 
 static void _reloc_move_deinit(struct ftl_reloc_move *mv)
 {
-	ftl_rq_del(mv->rd);
-	ftl_rq_del(mv->wr);
+	if (mv) {
+		ftl_rq_del(mv->rd);
+		ftl_rq_del(mv->wr);
+	}
 }
 
 static int _reloc_move_init(struct ftl_reloc *reloc, struct ftl_reloc_move *mv)
@@ -954,10 +956,6 @@ ftl_reloc_init(struct spdk_ftl_dev *dev)
 	reloc->max_active = dev->conf.max_active_relocs;
 	reloc->xfer_size = dev->xfer_size;
 	reloc->num_defrag_bands = 0;
-
-	if (reloc->max_qdepth > FTL_RELOC_MAX_MOVES) {
-		goto error;
-	}
 
 	if (reloc->max_qdepth < reloc->max_active) {
 		SPDK_ERRLOG("max_qdepth need to be greater or equal max_acitve relocs\n");
@@ -1115,8 +1113,10 @@ ftl_reloc_free(struct ftl_reloc *reloc)
 		return;
 	}
 
-	for (i = 0; i < reloc->max_qdepth; ++i) {
-		_reloc_move_deinit(&reloc->move_buffer[i]);
+	if (reloc->move_buffer) {
+		for (i = 0; i < reloc->max_qdepth; ++i) {
+			_reloc_move_deinit(&reloc->move_buffer[i]);
+		}
 	}
 
 	for (i = 0; i < ftl_get_num_bands(reloc->dev); ++i) {
@@ -1164,6 +1164,7 @@ static void _read_lba_map_cb(struct ftl_basic_rq *brq)
 		LIST_REMOVE(band, list_entry);
 		LIST_INSERT_HEAD(&reloc->list_ready, band, list_entry);
 		flt_band_iter_init(band);
+		ftl_band_iter_advance(band, ftl_head_md_num_blocks(dev));
 	} else {
 		/* An error, move band back to the closed band list */
 		LIST_REMOVE(band, list_entry);
@@ -1209,7 +1210,7 @@ static struct ftl_band *_get_band(struct ftl_reloc *reloc)
 	struct ftl_band *band = NULL, *next, *iter = NULL;
 
 	LIST_FOREACH_FROM_SAFE(iter, &reloc->list_ready, list_entry, next) {
-		if (!ftl_band_full(iter, iter->iter.offset)) {
+		if (!band && !ftl_band_full(iter, iter->iter.offset)) {
 			band = iter;
 		} else if (ftl_band_empty(iter)) {
 			if (ftl_band_no_io(iter) &&iter->state == FTL_BAND_STATE_CLOSED) {

@@ -83,7 +83,11 @@ static void _close_full_bands(struct ftl_writer *writer)
 }
 
 static bool _is_limit(struct ftl_writer *writer) {
-	return writer->dev->limit < writer->limit;
+	if (writer->dev->limit < writer->limit) {
+		return true;
+	} else {
+		return false;
+	}
 }
 
 static struct ftl_band *_get_band(struct ftl_writer *writer)
