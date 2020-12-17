@@ -93,6 +93,9 @@ struct ftl_rq {
 
 		/* Owner context */
 		void *priv;
+
+		/* This is user IO */
+		bool uio;
 	} owner;
 
 	/* Iterator fields for processing state of the request */
@@ -138,6 +141,9 @@ struct ftl_basic_rq {
 
 		/* Owner context */
 		void *priv;
+
+		/* This is user IO */
+		bool uio;
 	} owner;
 
 	/* Private fields for issuing IO */

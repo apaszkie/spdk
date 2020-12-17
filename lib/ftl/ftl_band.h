@@ -236,7 +236,7 @@ int		ftl_band_write_head_md(struct ftl_band *band, ftl_io_fn cb);
 struct ftl_addr ftl_band_tail_md_addr(struct ftl_band *band);
 struct ftl_addr ftl_band_head_md_addr(struct ftl_band *band);
 void		ftl_band_write_failed(struct ftl_band *band);
-int		ftl_band_full(struct ftl_band *band, size_t offset);
+bool		ftl_band_full(struct ftl_band *band, size_t offset);
 int		ftl_band_write_prep(struct ftl_band *band);
 struct ftl_zone *ftl_band_next_operational_zone(struct ftl_band *band,
 		struct ftl_zone *zone);
@@ -244,6 +244,8 @@ size_t		ftl_lba_map_pool_elem_size(struct spdk_ftl_dev *dev);
 void		ftl_band_remove_zone(struct ftl_band *band, struct ftl_zone *zone);
 
 struct ftl_band *ftl_band_get_next_free(struct spdk_ftl_dev *dev);
+struct ftl_band *ftl_band_get_next_to_defrag(struct spdk_ftl_dev *dev);
+struct ftl_addr  ftl_band_lba_map_addr(struct ftl_band *band, size_t offset);
 
 static inline void ftl_band_set_owner(struct ftl_band *band,
                                       ftl_band_state_change_fn fn,
@@ -271,6 +273,12 @@ static inline int
 ftl_band_empty(const struct ftl_band *band)
 {
 	return band->lba_map.num_vld == 0;
+}
+
+static inline bool
+ftl_band_no_io(const struct ftl_band *band)
+{
+	return band->iter.queue_depth == 0;
 }
 
 static inline struct ftl_zone *
@@ -333,5 +341,25 @@ ftl_zone_is_writable(const struct spdk_ftl_dev *dev, const struct ftl_zone *zone
 void ftl_band_md_pack_head(struct ftl_band *band);
 
 void ftl_band_md_pack_tail(struct ftl_band *band);
+
+static inline void
+flt_band_iter_init(struct ftl_band *band)
+{
+	/* Initialize band iterator to begin state */
+	band->iter.zone = CIRCLEQ_FIRST(&band->zones);
+	band->iter.addr.offset = band->iter.zone->info.zone_id;
+	band->iter.offset = 0;
+}
+
+static inline void
+ftl_band_iter_advance(struct ftl_band *band, uint64_t num_blocks)
+{
+	band->iter.offset += num_blocks;
+	band->iter.zone->busy = true;
+	band->iter.addr = ftl_band_next_xfer_addr(band, band->iter.addr, num_blocks);
+	band->iter.zone = ftl_band_next_operational_zone(band, band->iter.zone);
+
+	assert(!ftl_addr_invalid(band->iter.addr));
+}
 
 #endif /* FTL_BAND_H */

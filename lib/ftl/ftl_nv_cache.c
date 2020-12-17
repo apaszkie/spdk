@@ -848,6 +848,7 @@ static struct ftl_nv_cache_compaction *compaction_alloc(
 	compaction->nv_cache = &dev->nv_cache;
 	compaction->wr->owner.priv = compaction;
 	compaction->wr->owner.cb = compaction_process_ftl_done;
+	compaction->wr->owner.uio = true;;
 
 	TAILQ_INIT(&compaction->chunk_list);
 	return compaction;

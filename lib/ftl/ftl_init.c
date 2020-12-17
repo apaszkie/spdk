@@ -93,7 +93,7 @@ static pthread_mutex_t			g_ftl_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static const struct spdk_ftl_conf	g_default_conf = {
 	.limits = {
 		/* 1 free bands  / 0 % host writes */
-		[SPDK_FTL_LIMIT_CRIT]  = { .thld = 2,  .limit = 0 },
+		[SPDK_FTL_LIMIT_CRIT]  = { .thld = 1,  .limit = 0 },
 		/* 3 free bands / 12 % host writes */
 		[SPDK_FTL_LIMIT_HIGH]  = { .thld = 3, .limit = 12 },
 		/* 7 free bands / 45 % host writes */
@@ -110,7 +110,7 @@ static const struct spdk_ftl_conf	g_default_conf = {
 	/* 90% band fill threshold */
 	.band_thld = 90,
 	/* Max 256 IO depth per band relocate */
-	.max_reloc_qdepth = 64,
+	.max_reloc_qdepth = 256,
 	/* Max 3 active band relocates */
 	.max_active_relocs = 3,
 	/* IO pool size per user thread (this should be adjusted to thread IO qdepth) */

@@ -39,24 +39,6 @@
 #include "ftl_core.h"
 #include "ftl_band.h"
 
-static void
-_band_iter_advance(struct ftl_band *band, uint64_t num_blocks)
-{
-	band->iter.offset += num_blocks;
-
-	if (ftl_band_full(band, band->iter.offset)) {
-		ftl_band_set_state(band, FTL_BAND_STATE_FULL);
-		band->owner.state_change_fn(band);
-	}
-
-	band->iter.queue_depth++;
-	band->iter.zone->busy = true;
-	band->iter.addr = ftl_band_next_xfer_addr(band, band->iter.addr, num_blocks);
-	band->iter.zone = ftl_band_next_operational_zone(band, band->iter.zone);
-
-	assert(!ftl_addr_invalid(band->iter.addr));
-}
-
 static void _write_rq_end(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 {
 	struct ftl_rq *rq = arg;
@@ -104,7 +86,45 @@ int ftl_band_rq_write(struct ftl_band *band, struct ftl_rq *rq) {
 	}
 
 	if (spdk_likely(!rc)) {
-		_band_iter_advance(band, rq->num_blocks);
+		band->iter.queue_depth++;
+		ftl_band_iter_advance(band, rq->num_blocks);
+		if (ftl_band_full(band, band->iter.offset)) {
+			ftl_band_set_state(band, FTL_BAND_STATE_FULL);
+			band->owner.state_change_fn(band);
+		}
+	}
+
+	return rc;
+}
+
+static void _read_rq_end(struct spdk_bdev_io *bdev_io, bool success, void *arg)
+{
+	struct ftl_rq *rq = arg;
+	struct ftl_band *band = rq->io.band;
+
+	rq->success = success;
+	band->iter.queue_depth--;
+
+	rq->owner.cb(rq);
+	spdk_bdev_free_io(bdev_io);
+}
+
+int ftl_band_rq_read(struct ftl_band *band, struct ftl_rq *rq)
+{
+	struct spdk_ftl_dev *dev = band->dev;
+	int rc;
+
+	rq->success = false;
+	rq->io.band = band;
+	rq->io.zone = band->iter.zone;
+	rq->io.addr = band->iter.addr;
+
+	rc = spdk_bdev_readv_blocks(dev->base_bdev_desc, dev->base_ioch,
+			rq->io_vec, rq->io_vec_size, rq->io.addr.offset,
+			rq->num_blocks, _read_rq_end, rq);
+
+	if (spdk_likely(!rc)) {
+		band->iter.queue_depth++;
 	}
 
 	return rc;
@@ -141,6 +161,7 @@ int ftl_band_basic_rq_write(struct ftl_band *band, struct ftl_basic_rq *brq) {
 
 	brq->io.band = band;
 	brq->io.zone = band->iter.zone;
+	brq->success = false;
 
 	if (ftl_is_append_supported(dev)) {
 		rc = spdk_bdev_zone_append(dev->base_bdev_desc, dev->base_ioch,
@@ -155,7 +176,40 @@ int ftl_band_basic_rq_write(struct ftl_band *band, struct ftl_basic_rq *brq) {
 	}
 
 	if (spdk_likely(!rc)) {
-		_band_iter_advance(band, brq->num_blocks);
+		band->iter.queue_depth++;
+		ftl_band_iter_advance(band, brq->num_blocks);
+		if (ftl_band_full(band, band->iter.offset)) {
+			ftl_band_set_state(band, FTL_BAND_STATE_FULL);
+			band->owner.state_change_fn(band);
+		}
+	}
+
+	return rc;
+}
+
+static void _read_brq_end(struct spdk_bdev_io *bdev_io, bool success, void *arg)
+{
+	struct ftl_basic_rq *brq = arg;
+	struct ftl_band *band = brq->io.band;
+
+	brq->success = success;
+	band->iter.queue_depth--;
+
+	brq->owner.cb(brq);
+	spdk_bdev_free_io(bdev_io);
+}
+
+int ftl_band_basic_rq_read(struct ftl_band *band, struct ftl_basic_rq *brq)
+{
+	struct spdk_ftl_dev *dev = band->dev;
+	int rc;
+
+	rc = spdk_bdev_read_blocks(dev->base_bdev_desc, dev->base_ioch,
+			brq->io_payload, brq->io.addr.offset,
+			brq->num_blocks, _read_brq_end, brq);
+
+	if (spdk_likely(!rc)) {
+		band->iter.queue_depth++;
 	}
 
 	return rc;

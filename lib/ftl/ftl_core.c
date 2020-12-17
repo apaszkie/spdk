@@ -982,6 +982,10 @@ ftl_shutdown_complete(struct spdk_ftl_dev *dev)
 		return 0;
 	}
 
+	if (!ftl_reloc_is_halted(dev->reloc)) {
+		return 0;
+	}
+
 	if (dev->nv_cache.compaction_active_count) {
 		return 0;
 	}
@@ -1766,17 +1770,13 @@ ftl_process_writes(struct spdk_ftl_dev *dev)
 	return 0;
 }
 
-static bool
-ftl_dev_needs_defrag(struct spdk_ftl_dev *dev)
+bool
+ftl_needs_defrag(struct spdk_ftl_dev *dev)
 {
 	const struct spdk_ftl_limit *limit = ftl_get_limit(dev,
 					     SPDK_FTL_LIMIT_START);
 
-	if (ftl_reloc_is_halted(dev->reloc)) {
-		return false;
-	}
-
-	if (ftl_reloc_is_defrag_active(dev->reloc)) {
+	if (dev->halt) {
 		return false;
 	}
 
@@ -1785,60 +1785,6 @@ ftl_dev_needs_defrag(struct spdk_ftl_dev *dev)
 	}
 
 	return false;
-}
-
-static double
-ftl_band_calc_merit(struct ftl_band *band, size_t *threshold_valid)
-{
-	size_t usable, valid, invalid;
-	double vld_ratio;
-
-	/* If the band doesn't have any usable blocks it's of no use */
-	usable = ftl_band_num_usable_blocks(band);
-	if (usable == 0) {
-		return 0.0;
-	}
-
-	valid =  threshold_valid ? (usable - *threshold_valid) : band->lba_map.num_vld;
-	invalid = usable - valid;
-
-	/* Add one to avoid division by 0 */
-	vld_ratio = (double)invalid / (double)(valid + 1);
-	return vld_ratio;
-}
-
-static struct ftl_band *
-ftl_select_defrag_band(struct spdk_ftl_dev *dev)
-{
-	struct ftl_band *band, *mband = NULL;
-	double merit = 0;
-
-	LIST_FOREACH(band, &dev->shut_bands, list_entry) {
-		assert(band->state == FTL_BAND_STATE_CLOSED);
-		band->merit = ftl_band_calc_merit(band, NULL);
-		if (band->merit > merit) {
-			merit = band->merit;
-			mband = band;
-		}
-	}
-
-	return mband;
-}
-
-static void
-ftl_process_relocs(struct spdk_ftl_dev *dev)
-{
-	struct ftl_band *band;
-
-	if (ftl_dev_needs_defrag(dev)) {
-		band = ftl_select_defrag_band(dev);
-		if (band) {
-			ftl_reloc_add(dev->reloc, band, 0, ftl_get_num_blocks_in_band(dev), 0, true);
-			ftl_trace_defrag_band(dev, band);
-		}
-	}
-
-	ftl_reloc(dev->reloc);
 }
 
 int
@@ -2258,8 +2204,7 @@ ftl_task_core(void *ctx)
 	ftl_process_io_queue(dev);
 	ftl_writer_run(&dev->writer_user);
 	ftl_writer_run(&dev->writer_gc);
-
-	ftl_process_relocs(dev);
+	ftl_reloc(dev->reloc);
 	ftl_nv_cache_compact(dev);
 
 	return 0;

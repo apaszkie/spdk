@@ -315,6 +315,7 @@ void	ftl_get_media_events(struct spdk_ftl_dev *dev);
 int	ftl_io_channel_poll(void *arg);
 void	ftl_evict_cache_entry(struct spdk_ftl_dev *dev, struct ftl_wbuf_entry *entry);
 struct spdk_io_channel *ftl_get_io_channel(const struct spdk_ftl_dev *dev);
+bool    ftl_needs_defrag(struct spdk_ftl_dev *dev);
 
 #define ftl_to_addr(address) \
 	(struct ftl_addr) { .offset = (uint64_t)(address) }

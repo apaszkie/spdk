@@ -49,6 +49,10 @@ void ftl_band_close(struct ftl_band *band);
 
 int ftl_band_rq_write(struct ftl_band *band, struct ftl_rq *rq);
 
+int ftl_band_rq_read(struct ftl_band *band, struct ftl_rq *rq);
+
 int ftl_band_basic_rq_write(struct ftl_band *band, struct ftl_basic_rq *brq);
+
+int ftl_band_basic_rq_read(struct ftl_band *band, struct ftl_basic_rq *brq);
 
 #endif  // FTL_BAND_OPS_H

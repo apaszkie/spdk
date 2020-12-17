@@ -126,7 +126,7 @@ ftl_band_tail_md_offset(const struct ftl_band *band)
 	       ftl_tail_md_num_blocks(band->dev);
 }
 
-int
+bool
 ftl_band_full(struct ftl_band *band, size_t offset)
 {
 	return offset == ftl_band_tail_md_offset(band);
@@ -663,7 +663,6 @@ ftl_band_alloc_lba_map(struct ftl_band *band)
 	lba_map->segments = (char *)lba_map->dma_buf + ftl_tail_md_num_blocks(dev) * FTL_BLOCK_SIZE;
 
 	ftl_band_acquire_lba_map(band);
-	//ftl_band_clear_lba_map(band);
 	return 0;
 }
 
@@ -801,7 +800,7 @@ ftl_band_write_tail_md(struct ftl_band *band, ftl_io_fn cb)
 			ftl_band_md_pack_tail, cb);
 }
 
-static struct ftl_addr
+struct ftl_addr
 ftl_band_lba_map_addr(struct ftl_band *band, size_t offset)
 {
 	return ftl_band_next_xfer_addr(band, band->tail_md_addr,
@@ -1045,10 +1044,7 @@ ftl_band_write_prep(struct ftl_band *band)
 		return -1;
 	}
 
-	/* Initialize band iterator to begin state */
-	band->iter.zone = CIRCLEQ_FIRST(&band->zones);
-	band->iter.addr.offset = band->iter.zone->info.zone_id;
-	band->iter.offset = 0;
+	flt_band_iter_init(band);
 
 	band->seq = ++dev->seq;
 	return 0;
@@ -1107,4 +1103,42 @@ ftl_lba_map_pool_elem_size(struct spdk_ftl_dev *dev)
 	/* Map pool element holds the whole tail md + segments map */
 	return ftl_tail_md_num_blocks(dev) * FTL_BLOCK_SIZE +
 	       spdk_divide_round_up(ftl_get_num_blocks_in_band(dev), FTL_NUM_LBA_IN_BLOCK);
+}
+
+static double
+ftl_band_calc_merit(struct ftl_band *band, size_t *threshold_valid)
+{
+	size_t usable, valid, invalid;
+	double vld_ratio;
+
+	/* If the band doesn't have any usable blocks it's of no use */
+	usable = ftl_band_num_usable_blocks(band);
+	if (usable == 0) {
+		return 0.0;
+	}
+
+	valid =  threshold_valid ? (usable - *threshold_valid) : band->lba_map.num_vld;
+	invalid = usable - valid;
+
+	/* Add one to avoid division by 0 */
+	vld_ratio = (double)invalid / (double)(valid + 1);
+	return vld_ratio;
+}
+
+struct ftl_band *
+ftl_band_get_next_to_defrag(struct spdk_ftl_dev *dev)
+{
+	struct ftl_band *band, *mband = NULL;
+	double merit = 0;
+
+	LIST_FOREACH(band, &dev->shut_bands, list_entry) {
+		assert(band->state == FTL_BAND_STATE_CLOSED);
+		band->merit = ftl_band_calc_merit(band, NULL);
+		if (band->merit > merit) {
+			merit = band->merit;
+			mband = band;
+		}
+	}
+
+	return mband;
 }

@@ -126,9 +126,20 @@ static struct ftl_band *_get_band(struct ftl_writer *writer)
 	return writer->band;
 }
 
+static void
+_update_stats(struct spdk_ftl_dev *dev, uint64_t num_blocks, bool uio) {
+	dev->stats.write_total += num_blocks;
+	if (uio) {
+		dev->stats.write_user += num_blocks;
+	}
+}
+
 void ftl_writer_run(struct ftl_writer *writer)
 {
+	int rc;
+	struct spdk_ftl_dev *dev = writer->dev;
 	struct ftl_band *band = _get_band(writer);
+
 	if (spdk_unlikely(!band)) {
 		return;
 	}
@@ -140,14 +151,23 @@ void ftl_writer_run(struct ftl_writer *writer)
 	if (!TAILQ_EMPTY(&writer->rq_queue)) {
 		struct ftl_rq *rq = TAILQ_FIRST(&writer->rq_queue);
 		TAILQ_REMOVE(&writer->rq_queue, rq, qentry);
-		ftl_band_rq_write(writer->band, rq);
+		rc = ftl_band_rq_write(writer->band, rq);
+		if (spdk_unlikely(rc)) {
+			rq->owner.cb(rq);
+		} else {
+			_update_stats(dev, rq->num_blocks, rq->owner.uio);
+		}
 	}
-
 
 	if (!TAILQ_EMPTY(&writer->basic_rq_queue)) {
 		struct ftl_basic_rq *brq = TAILQ_FIRST(&writer->basic_rq_queue);
 		TAILQ_REMOVE(&writer->basic_rq_queue, brq, qentry);
-		ftl_band_basic_rq_write(writer->band, brq);
+		rc = ftl_band_basic_rq_write(writer->band, brq);
+		if (spdk_unlikely(rc)) {
+			brq->owner.cb(brq);
+		} else {
+			_update_stats(dev, brq->num_blocks, brq->owner.uio);
+		}
 	}
 
 	if (spdk_unlikely(!LIST_EMPTY(&writer->full_bands))) {
