@@ -1845,19 +1845,7 @@ ftl_submit_write_leaf(struct ftl_io *io)
 	int rc;
 
 	if (io->flags & FTL_IO_WEAK) {
-		struct spdk_ftl_dev *dev = io->dev;
-		struct ftl_basic_rq *rq = &io->rq;
-
-		assert(io->iov_cnt == 1);
-
-		ftl_basic_rq_init(dev, rq, io->iov->iov_base, io->num_blocks);
-		ftl_basic_rq_set_owner(rq, _write_rq_cb, io);
-		ftl_writer_queue_basic_rq(&dev->writer_gc, rq);
-		ftl_io_advance(io, io->num_blocks);
-
-		dev->stats.write_total += io->num_blocks;
-		dev->reloc_outstanding++;
-
+		TAILQ_INSERT_TAIL(&io->dev->reloc_queue, io, queue_entry);
 		return 0;
 	}
 

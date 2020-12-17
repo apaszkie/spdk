@@ -1335,8 +1335,6 @@ static void _move_write(struct ftl_reloc *reloc, struct ftl_reloc_move *mv)
 	struct ftl_rq *rd = mv->rd;
 	const uint64_t num_entries = wr->num_blocks;
 	struct ftl_band *band = rd->io.band;
-	struct ftl_addr current_addr;
-	uint64_t lba;
 
 	assert(wr->iter.idx < num_entries);
 	assert(rd->iter.idx < rd->iter.count);
@@ -1353,25 +1351,18 @@ static void _move_write(struct ftl_reloc *reloc, struct ftl_reloc_move *mv)
 			continue;
 		}
 
-		lba = band->lba_map.map[offset];
-		current_addr = ftl_l2p_get(dev, lba);
-		if (ftl_addr_cmp(current_addr, rd->io.addr)) {
-			/*
-			 * Swap payload
-			 */
-			ftl_rq_swap_payload(wr, wr->iter.idx, rd, rd->iter.idx);
+		/*
+		 * Swap payload
+		 */
+		ftl_rq_swap_payload(wr, wr->iter.idx, rd, rd->iter.idx);
 
-			iter->addr = rd->io.addr;
-			iter->owner.priv = band;
-			iter->lba = lba;
+		iter->addr = rd->io.addr;
+		iter->owner.priv = band;
+		iter->lba = band->lba_map.map[offset];;
 
-			/* Advance within batch */
-			iter++;
-			wr->iter.idx++;
-		} else {
-			/* Inconsistent state */
-			abort();
-		}
+		/* Advance within batch */
+		iter++;
+		wr->iter.idx++;
 
 		/* Advance within reader */
 		rd->iter.idx++;

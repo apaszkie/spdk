@@ -43,7 +43,6 @@ void ftl_writer_init(struct spdk_ftl_dev *dev, struct ftl_writer *writer,
 	memset(writer, 0, sizeof(*writer));
 	writer->dev = dev;
 	TAILQ_INIT(&writer->rq_queue);
-	TAILQ_INIT(&writer->basic_rq_queue);
 	LIST_INIT(&writer->full_bands);
 	writer->limit = limit;
 }
@@ -156,17 +155,6 @@ void ftl_writer_run(struct ftl_writer *writer)
 			rq->owner.cb(rq);
 		} else {
 			_update_stats(dev, rq->num_blocks, rq->owner.uio);
-		}
-	}
-
-	if (!TAILQ_EMPTY(&writer->basic_rq_queue)) {
-		struct ftl_basic_rq *brq = TAILQ_FIRST(&writer->basic_rq_queue);
-		TAILQ_REMOVE(&writer->basic_rq_queue, brq, qentry);
-		rc = ftl_band_basic_rq_write(writer->band, brq);
-		if (spdk_unlikely(rc)) {
-			brq->owner.cb(brq);
-		} else {
-			_update_stats(dev, brq->num_blocks, brq->owner.uio);
 		}
 	}
 
