@@ -57,7 +57,25 @@ struct ftl_writer {
 
 	/* FTL band limit which blocks writes */
 	int limit;
+
+	/* Flag indicating halt has benn requested */
+	bool halt;
+
+	/* Pad reqest for closing band */
+	struct ftl_rq *pad_rq;
 };
+
+static inline void ftl_writer_halt(struct ftl_writer *writer)
+{
+	writer->halt = true;
+}
+
+static inline void ftl_writer_resume(struct ftl_writer *writer)
+{
+	writer->halt = false;
+}
+
+bool ftl_writer_is_halted(struct ftl_writer *writer);
 
 void ftl_writer_init(struct spdk_ftl_dev *dev, struct ftl_writer *writer,
 		uint64_t limit);

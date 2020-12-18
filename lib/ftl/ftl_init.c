@@ -376,6 +376,10 @@ _ftl_init_bands_state(void *ctx)
 	}
 
 	ftl_reloc_resume(dev->reloc);
+	ftl_writer_resume(&dev->writer_user);
+	ftl_writer_resume(&dev->writer_gc);
+	ftl_nv_cache_resume(&dev->nv_cache);
+
 	/* Clear the limit applications as they're incremented incorrectly by */
 	/* the initialization code */
 	memset(dev->stats.limits, 0, sizeof(dev->stats.limits));
@@ -1462,7 +1466,6 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 	ftl_release_bdev(dev->base_bdev_desc);
 
 	spdk_free(dev->md_buf);
-
 	assert(dev->num_io_channels == 0);
 	free(dev->ioch_array);
 	free(dev->iov_buf);
@@ -1630,12 +1633,6 @@ ERROR:
 }
 
 static void
-_ftl_halt_defrag(void *arg)
-{
-	ftl_reloc_halt(((struct spdk_ftl_dev *)arg)->reloc);
-}
-
-static void
 ftl_halt_complete_cb_thread(void *ctx)
 {
 	struct ftl_dev_init_ctx *fini_ctx = ctx;
@@ -1766,8 +1763,6 @@ ftl_add_halt_poller(void *ctx)
 	struct spdk_ftl_dev *dev = fini_ctx->dev;
 
 	dev->reloc_halt_started = true;
-
-	_ftl_halt_defrag(dev);
 
 	assert(!fini_ctx->poller);
 	fini_ctx->poller = SPDK_POLLER_REGISTER(ftl_halt_defrag_poller, fini_ctx, 100);

@@ -67,9 +67,6 @@ struct ftl_reloc_task {
 	/* Parent */
 	struct ftl_reloc			*reloc;
 
-	/* Thread on which relocation task is running */
-	struct spdk_thread			*thread;
-
 	/* Poller with movement logic */
 	struct spdk_poller			*poller;
 
@@ -880,8 +877,6 @@ ftl_reloc_init_task(struct ftl_reloc *reloc, struct spdk_thread *thread)
 	}
 
 	task->reloc = reloc;
-	task->thread = thread;
-
 	task->move_queue = spdk_ring_create(SPDK_RING_TYPE_MP_SC,
 					    spdk_align32pow2(reloc->max_qdepth + 1),
 					    SPDK_ENV_SOCKET_ID_ANY);
@@ -896,7 +891,7 @@ ftl_reloc_init_task(struct ftl_reloc *reloc, struct spdk_thread *thread)
 		goto error;
 	}
 
-	spdk_thread_send_msg(task->thread, _ftl_reloc_init_task, task);
+	spdk_thread_send_msg(reloc->dev->core_thread, _ftl_reloc_init_task, task);
 	return task;
 error:
 	spdk_ring_free(task->move_queue);
@@ -1055,26 +1050,21 @@ ftl_reloc_free_task(void *ctx)
 	struct ftl_reloc_task_fini *fini_ctx = ctx;
 	struct ftl_reloc_task *task = fini_ctx->task;
 	struct ftl_reloc *reloc = task->reloc;
-	struct spdk_ftl_dev *dev = reloc->dev;
 
 	spdk_poller_unregister(&task->poller);
 	spdk_ring_free(task->move_queue);
-
-	if (dev->conf.core_mask) {
-		spdk_thread_exit(task->thread);
-	}
-
-	free(task);
 
 	task = STAILQ_FIRST(&reloc->task_queue);
 	if (task) {
 		STAILQ_REMOVE_HEAD(&reloc->task_queue, entry);
 		fini_ctx->task = task;
-		spdk_thread_send_msg(task->thread, ftl_reloc_free_task, fini_ctx);
+		spdk_thread_send_msg(reloc->dev->core_thread, ftl_reloc_free_task, fini_ctx);
 	} else {
 		spdk_thread_send_msg(reloc->dev->core_thread, fini_ctx->cb, fini_ctx->cb_arg);
 		free(fini_ctx);
 	}
+
+	free(task);
 }
 
 int
@@ -1099,7 +1089,8 @@ ftl_reloc_free_tasks(struct ftl_reloc *reloc, spdk_msg_fn cb, void *cb_arg)
 	fini_ctx->task = task;
 	fini_ctx->cb = cb;
 	fini_ctx->cb_arg = cb_arg;
-	spdk_thread_send_msg(task->thread, ftl_reloc_free_task, fini_ctx);
+	spdk_thread_send_msg(reloc->dev->core_thread,
+			ftl_reloc_free_task, fini_ctx);
 
 	return 0;
 }
@@ -1204,16 +1195,13 @@ static int _prepare_band(struct ftl_reloc *reloc, struct ftl_band *band)
 	return 0;
 }
 
-static struct ftl_band *_get_band(struct ftl_reloc *reloc)
+static void _release_empty_bands(struct ftl_reloc *reloc)
 {
-	struct spdk_ftl_dev *dev = reloc->dev;
-	struct ftl_band *band = NULL, *next, *iter = NULL;
+	struct ftl_band *next, *iter;
 
-	LIST_FOREACH_FROM_SAFE(iter, &reloc->list_ready, list_entry, next) {
-		if (!band && !ftl_band_full(iter, iter->iter.offset)) {
-			band = iter;
-		} else if (ftl_band_empty(iter)) {
-			if (ftl_band_no_io(iter) &&iter->state == FTL_BAND_STATE_CLOSED) {
+	LIST_FOREACH_SAFE(iter, &reloc->list_ready, list_entry, next) {
+		if (ftl_band_empty(iter)) {
+			if (ftl_band_qd(iter) && iter->state == FTL_BAND_STATE_CLOSED) {
 				ftl_band_release_lba_map(iter);
 				ftl_band_set_state(iter, FTL_BAND_STATE_FREE);
 			} else {
@@ -1221,6 +1209,19 @@ static struct ftl_band *_get_band(struct ftl_reloc *reloc)
 				abort();
 				assert(0);
 			}
+		}
+	}
+}
+
+static struct ftl_band *_get_band(struct ftl_reloc *reloc)
+{
+	struct spdk_ftl_dev *dev = reloc->dev;
+	struct ftl_band *band = NULL, *iter;
+
+	LIST_FOREACH(iter, &reloc->list_ready, list_entry) {
+		if (!ftl_band_full(iter, iter->iter.offset)) {
+			band = iter;
+			break;
 		}
 	}
 
@@ -1336,6 +1337,8 @@ static void _move_write(struct ftl_reloc *reloc, struct ftl_reloc_move *mv)
 	struct ftl_rq *rd = mv->rd;
 	const uint64_t num_entries = wr->num_blocks;
 	struct ftl_band *band = rd->io.band;
+	struct ftl_addr current_addr;
+	uint64_t lba;
 
 	assert(wr->iter.idx < num_entries);
 	assert(rd->iter.idx < rd->iter.count);
@@ -1352,18 +1355,25 @@ static void _move_write(struct ftl_reloc *reloc, struct ftl_reloc_move *mv)
 			continue;
 		}
 
-		/*
-		 * Swap payload
-		 */
-		ftl_rq_swap_payload(wr, wr->iter.idx, rd, rd->iter.idx);
+		lba = band->lba_map.map[offset];
+		current_addr = ftl_l2p_get(dev, lba);
+		if (ftl_addr_cmp(current_addr, rd->io.addr)) {
+			/*
+			 * Swap payload
+			 */
+			ftl_rq_swap_payload(wr, wr->iter.idx, rd, rd->iter.idx);
 
-		iter->addr = rd->io.addr;
-		iter->owner.priv = band;
-		iter->lba = band->lba_map.map[offset];;
+			iter->addr = rd->io.addr;
+			iter->owner.priv = band;
+			iter->lba = lba;
 
-		/* Advance within batch */
-		iter++;
-		wr->iter.idx++;
+			/* Advance within batch */
+			iter++;
+			wr->iter.idx++;
+		} else {
+			/* Inconsistent state */
+			abort();
+		}
 
 		/* Advance within reader */
 		rd->iter.idx++;
@@ -1436,6 +1446,8 @@ ftl_reloc(struct ftl_reloc *reloc)
 	_move_run(reloc, reloc->move_iter);
 	reloc->move_iter = CIRCLEQ_LOOP_NEXT(&reloc->move_cqueue,
 			reloc->move_iter, centry);
+
+	_release_empty_bands(reloc);
 	return;
 
 	ftl_reloc_process_move_completions(reloc);

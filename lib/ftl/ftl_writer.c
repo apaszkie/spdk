@@ -45,6 +45,7 @@ void ftl_writer_init(struct spdk_ftl_dev *dev, struct ftl_writer *writer,
 	TAILQ_INIT(&writer->rq_queue);
 	LIST_INIT(&writer->full_bands);
 	writer->limit = limit;
+	writer->halt = true;
 }
 
 static bool _can_write(struct ftl_writer *writer) {
@@ -82,11 +83,15 @@ static void _close_full_bands(struct ftl_writer *writer)
 	}
 }
 
-static bool _is_limit(struct ftl_writer *writer) {
-	if (writer->dev->limit < writer->limit) {
-		return true;
-	} else {
+static bool _is_active(struct ftl_writer *writer) {
+	if (spdk_unlikely(writer->halt)) {
 		return false;
+	}
+
+	if (writer->dev->limit < writer->limit) {
+		return false;
+	} else {
+		return true;
 	}
 }
 
@@ -103,7 +108,7 @@ static struct ftl_band *_get_band(struct ftl_writer *writer)
 				ftl_band_open(writer->next_band);
 			}
 		}
-	} else if (!_is_limit(writer)) {
+	} else if (_is_active(writer)) {
 		/* Get in the mean time next band */
 		writer->next_band = ftl_band_get_next_free(writer->dev);
 		if (writer->next_band) {
@@ -141,8 +146,13 @@ void ftl_writer_run(struct ftl_writer *writer)
 {
 	int rc;
 	struct spdk_ftl_dev *dev = writer->dev;
-	struct ftl_band *band = _get_band(writer);
+	struct ftl_band *band;
 
+	if (spdk_unlikely(!LIST_EMPTY(&writer->full_bands))) {
+		_close_full_bands(writer);
+	}
+
+	band = _get_band(writer);
 	if (spdk_unlikely(!band)) {
 		return;
 	}
@@ -161,8 +171,60 @@ void ftl_writer_run(struct ftl_writer *writer)
 			_update_stats(dev, rq->num_blocks, rq->owner.uio);
 		}
 	}
+}
 
-	if (spdk_unlikely(!LIST_EMPTY(&writer->full_bands))) {
-		_close_full_bands(writer);
+static void _pad_cb(struct ftl_rq *rq)
+{
+	struct ftl_writer *writer = rq->owner.priv;
+	if (rq->success) {
+		struct ftl_band *band = rq->io.band;
+		if (ftl_band_full(band, band->iter.offset)) {
+			/* We finished band padding and can free request*/
+			assert(writer->pad_rq == rq);
+			ftl_rq_del(writer->pad_rq);
+			writer->pad_rq = NULL;
+		} else {
+			/* Continue band padding */
+			ftl_writer_queue_rq(writer, rq);
+		}
+	} else {
+		/* TODO Handle error */
+		abort();
 	}
+}
+
+bool ftl_writer_is_halted(struct ftl_writer *writer)
+{
+	if (writer->band) {
+		if (writer->halt & !writer->pad_rq) {
+			/*
+			 * Halt procedure is in progress, we need to close
+			 * active band by padding them
+			 */
+
+			struct spdk_ftl_dev *dev = writer->dev;
+			struct ftl_rq *pad = ftl_rq_new(dev, dev->xfer_size,
+					dev->md_size);
+			if (pad) {
+				writer->pad_rq = pad;
+				pad->owner.priv = writer;
+				pad->owner.cb = _pad_cb;
+				memset(pad->io_payload, 0,
+					pad->num_blocks * FTL_BLOCK_SIZE);
+				ftl_writer_queue_rq(writer, pad);
+			}
+		}
+
+		return false;
+	}
+
+	if (writer->next_band) {
+		return false;
+	}
+
+	if (!LIST_EMPTY(&writer->full_bands)) {
+		return false;
+	}
+
+	return true;
 }

@@ -79,6 +79,9 @@ struct ftl_nv_cache {
 	/* FTL device */
 	struct spdk_ftl_dev *ftl_dev;
 
+	/* Flag indicating halt request */
+	bool halt;
+
 	/* Write buffer cache bdev */
 	struct spdk_bdev_desc *bdev_desc;
 
@@ -129,6 +132,21 @@ struct ftl_nv_cache {
 int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name);
 
 void ftl_nv_cache_deinit(struct spdk_ftl_dev *dev);
+
+static inline void ftl_nv_cache_halt(struct ftl_nv_cache *nv_cache)
+{
+	nv_cache->halt = true;
+}
+
+static inline void ftl_nv_cache_resume(struct ftl_nv_cache *nv_cache)
+{
+	nv_cache->halt = false;
+}
+
+static inline bool ftl_nv_cache_is_halted(struct ftl_nv_cache *nv_cache)
+{
+	return 0 == nv_cache->compaction_active_count;
+}
 
 uint64_t ftl_nv_cache_get_wr_buffer(struct ftl_nv_cache *nv_cache,
 				    struct ftl_io *io);

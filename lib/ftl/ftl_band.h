@@ -276,7 +276,7 @@ ftl_band_empty(const struct ftl_band *band)
 }
 
 static inline bool
-ftl_band_no_io(const struct ftl_band *band)
+ftl_band_qd(const struct ftl_band *band)
 {
 	return band->iter.queue_depth == 0;
 }

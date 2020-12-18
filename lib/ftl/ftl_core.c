@@ -982,15 +982,27 @@ ftl_shutdown_complete(struct spdk_ftl_dev *dev)
 		return 0;
 	}
 
-	if (!ftl_reloc_is_halted(dev->reloc)) {
-		return 0;
-	}
-
-	if (dev->nv_cache.compaction_active_count) {
-		return 0;
-	}
-
 	if (spdk_ring_count(ioch->free_queue) != ioch->num_entries) {
+		return 0;
+	}
+
+	if (!ftl_nv_cache_is_halted(&dev->nv_cache)) {
+		ftl_nv_cache_halt(&dev->nv_cache);
+		return 0;
+	}
+
+	if (!ftl_writer_is_halted(&dev->writer_user)) {
+		ftl_writer_halt(&dev->writer_user);
+		return 0;
+	}
+
+	if (!ftl_reloc_is_halted(dev->reloc)) {
+		ftl_reloc_halt(dev->reloc);
+		return 0;
+	}
+
+	if (!ftl_writer_is_halted(&dev->writer_gc)) {
+		ftl_writer_halt(&dev->writer_gc);
 		return 0;
 	}
 
@@ -2191,6 +2203,7 @@ ftl_task_core(void *ctx)
 
 	ftl_process_io_queue(dev);
 	ftl_writer_run(&dev->writer_user);
+	ftl_writer_run(&dev->writer_gc);
 	ftl_writer_run(&dev->writer_gc);
 	ftl_reloc(dev->reloc);
 	ftl_nv_cache_compact(dev);

@@ -400,7 +400,7 @@ static bool _is_compaction_required(struct ftl_nv_cache *nv_cache)
 {
 	uint64_t full;
 
-	if (nv_cache->ftl_dev->halt) {
+	if (nv_cache->halt) {
 		return false;
 	}
 
@@ -848,7 +848,7 @@ static struct ftl_nv_cache_compaction *compaction_alloc(
 	compaction->nv_cache = &dev->nv_cache;
 	compaction->wr->owner.priv = compaction;
 	compaction->wr->owner.cb = compaction_process_ftl_done;
-	compaction->wr->owner.uio = true;;
+	compaction->wr->owner.uio = true;
 
 	TAILQ_INIT(&compaction->chunk_list);
 	return compaction;
