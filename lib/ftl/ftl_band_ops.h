@@ -41,6 +41,8 @@ struct ftl_band;
 struct ftl_rq;
 struct ftl_basic_rq;
 
+typedef void (*ftl_band_ops_cb)(struct ftl_band *band, void *cntx, bool status);
+
 void ftl_band_ops_deinit(struct spdk_ftl_dev *dev);
 
 void ftl_band_open(struct ftl_band *band);
@@ -54,5 +56,7 @@ int ftl_band_rq_read(struct ftl_band *band, struct ftl_rq *rq);
 int ftl_band_basic_rq_write(struct ftl_band *band, struct ftl_basic_rq *brq);
 
 int ftl_band_basic_rq_read(struct ftl_band *band, struct ftl_basic_rq *brq);
+
+void ftl_band_get_next_gc(struct spdk_ftl_dev *dev, ftl_band_ops_cb cb, void *cntx);
 
 #endif  // FTL_BAND_OPS_H

@@ -1126,7 +1126,7 @@ ftl_band_calc_merit(struct ftl_band *band, size_t *threshold_valid)
 }
 
 struct ftl_band *
-ftl_band_get_next_to_defrag(struct spdk_ftl_dev *dev)
+ftl_band_search_next_to_defrag(struct spdk_ftl_dev *dev)
 {
 	struct ftl_band *band, *mband = NULL;
 	double merit = 0;
@@ -1138,6 +1138,10 @@ ftl_band_get_next_to_defrag(struct spdk_ftl_dev *dev)
 			merit = band->merit;
 			mband = band;
 		}
+	}
+
+	if (mband) {
+		LIST_REMOVE(mband, list_entry);
 	}
 
 	return mband;

@@ -1842,15 +1842,6 @@ _handle_io(void *ctx)
 	}
 }
 
-static void _write_rq_cb(struct ftl_basic_rq *brq)
-{
-	struct ftl_io *io = brq->owner.priv;
-
-	io->status = brq->success ? 0 : -EIO;
-	io->addr = brq->io.addr;
-	ftl_io_complete(io);
-}
-
 static int
 ftl_submit_write_leaf(struct ftl_io *io)
 {

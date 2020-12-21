@@ -58,6 +58,8 @@ static void _write_rq_end(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 	}
 
 	zone->busy = false;
+
+	assert(band->iter.queue_depth > 0);
 	band->iter.queue_depth--;
 
 	rq->owner.cb(rq);
@@ -103,6 +105,8 @@ static void _read_rq_end(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 	struct ftl_band *band = rq->io.band;
 
 	rq->success = success;
+
+	assert(band->iter.queue_depth > 0);
 	band->iter.queue_depth--;
 
 	rq->owner.cb(rq);
@@ -149,6 +153,8 @@ static void _write_brq_end(struct spdk_bdev_io *bdev_io, bool success, void *arg
 	}
 
 	zone->busy = false;
+
+	assert(band->iter.queue_depth > 0);
 	band->iter.queue_depth--;
 
 	brq->owner.cb(brq);
@@ -193,6 +199,8 @@ static void _read_brq_end(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 	struct ftl_band *band = brq->io.band;
 
 	brq->success = success;
+
+	assert(band->iter.queue_depth > 0);
 	band->iter.queue_depth--;
 
 	brq->owner.cb(brq);
@@ -281,5 +289,81 @@ void ftl_band_close(struct ftl_band *band)
 		/* TODO(mbarczak) ERROR */
 		assert(0);
 		abort();
+	}
+}
+
+static void _read_md_cb(struct ftl_basic_rq *brq)
+{
+	struct ftl_band *band = brq->owner.priv;
+	ftl_band_ops_cb cb;
+	void* priv;
+
+	cb = band->owner.ops_fn;
+	band->owner.ops_fn = NULL;
+
+	priv = band->owner.priv;
+	band->owner.priv = NULL;
+
+	if (brq->success) {
+		cb(band, priv, true);
+	} else {
+		cb(NULL, priv, true);
+	}
+
+}
+
+static int _read_md(struct ftl_band *band)
+{
+	int rc;
+	struct spdk_ftl_dev *dev = band->dev;
+	struct ftl_basic_rq *rq = &band->metadata_rq;
+
+	if (ftl_band_alloc_lba_map(band)) {
+		assert(0);
+		return -ENOMEM;
+	}
+
+	/* Read LBA map */
+	ftl_basic_rq_init(dev, rq, band->lba_map.map,
+			ftl_lba_map_num_blocks(dev));
+	ftl_basic_rq_set_owner(rq, _read_md_cb, band);
+
+	rq->io.band = band;
+	rq->io.addr = ftl_band_lba_map_addr(band, 0);
+	rq->io.zone = ftl_band_zone_from_addr(band, rq->io.addr);
+
+	rc = ftl_band_basic_rq_read(band, &band->metadata_rq);
+	if (rc) {
+		return rc;
+	}
+
+	return 0;
+}
+
+void
+ftl_band_get_next_gc(struct spdk_ftl_dev *dev, ftl_band_ops_cb cb, void *cntx)
+{
+	int rc;
+	struct ftl_band *band = ftl_band_search_next_to_defrag(dev);
+
+	/* Only one owner is allowed */
+	assert(!band->iter.queue_depth);
+
+	if (spdk_unlikely(!band)) {
+		cb(NULL, cntx, false);
+		return;
+	}
+
+	assert(!band->owner.ops_fn);
+	assert(!band->owner.priv);
+	band->owner.ops_fn = cb;
+	band->owner.priv = cntx;
+
+	rc = _read_md(band);
+	if (spdk_unlikely(rc)) {
+		band->owner.ops_fn = NULL;
+		band->owner.priv = NULL;
+		cb(NULL, cntx, false);
+		return;
 	}
 }

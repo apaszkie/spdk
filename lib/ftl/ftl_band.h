@@ -43,6 +43,7 @@
 #include "ftl_addr.h"
 #include "ftl_core.h"
 #include "ftl_rq.h"
+#include "ftl_band_ops.h"
 
 /* Number of LBAs that could be stored in a single block */
 #define FTL_NUM_LBA_IN_BLOCK	(FTL_BLOCK_SIZE / sizeof(uint64_t))
@@ -159,6 +160,8 @@ struct ftl_band {
 		void *priv;
 
 		ftl_band_state_change_fn state_change_fn;
+
+		ftl_band_ops_cb ops_fn;
 	} owner;
 
 	/* Number of operational zones */
@@ -244,7 +247,7 @@ size_t		ftl_lba_map_pool_elem_size(struct spdk_ftl_dev *dev);
 void		ftl_band_remove_zone(struct ftl_band *band, struct ftl_zone *zone);
 
 struct ftl_band *ftl_band_get_next_free(struct spdk_ftl_dev *dev);
-struct ftl_band *ftl_band_get_next_to_defrag(struct spdk_ftl_dev *dev);
+struct ftl_band *ftl_band_search_next_to_defrag(struct spdk_ftl_dev *dev);
 struct ftl_addr  ftl_band_lba_map_addr(struct ftl_band *band, size_t offset);
 
 static inline void ftl_band_set_owner(struct ftl_band *band,
@@ -275,10 +278,10 @@ ftl_band_empty(const struct ftl_band *band)
 	return band->lba_map.num_vld == 0;
 }
 
-static inline bool
+static inline uint64_t
 ftl_band_qd(const struct ftl_band *band)
 {
-	return band->iter.queue_depth == 0;
+	return band->iter.queue_depth;
 }
 
 static inline struct ftl_zone *

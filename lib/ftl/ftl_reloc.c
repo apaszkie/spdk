@@ -157,11 +157,14 @@ struct ftl_reloc {
 	/* Indicates relocate is about to halt */
 	bool					halt;
 
-	/* Queue of band which are read to relocate */
-	LIST_HEAD(, ftl_band)			list_pending;
+	/* Band which are read to relocate */
+	struct ftl_band 			*band;
 
-	/* Queue of band which are pending to relocate */
-	LIST_HEAD(, ftl_band)			list_ready;
+	/* Bands already read, but waiting for finishing GC */
+	LIST_HEAD(, ftl_band)			band_done;
+
+	/* Flags indicating reloc is waiting for a new band */
+	bool					band_waiting;
 
 	/* Maximum number of IOs per band */
 	size_t					max_qdepth;
@@ -1017,9 +1020,7 @@ ftl_reloc_init(struct spdk_ftl_dev *dev)
 		}
 	}
 
-	LIST_INIT(&reloc->list_ready);
-	LIST_INIT(&reloc->list_pending);
-
+	LIST_INIT(&reloc->band_done);
 	TAILQ_INIT(&reloc->pending_queue);
 	TAILQ_INIT(&reloc->active_queue);
 	TAILQ_INIT(&reloc->prio_queue);
@@ -1140,111 +1141,45 @@ ftl_reloc_resume(struct ftl_reloc *reloc)
 	}
 }
 
-static void _read_lba_map_cb(struct ftl_basic_rq *brq)
+static void _get_band_cb(struct ftl_band *band, void *cntx, bool status)
 {
-	struct spdk_ftl_dev *dev = brq->dev;
-	struct ftl_band *band = SPDK_CONTAINEROF(brq, struct ftl_band,
-			metadata_rq);
-	struct ftl_reloc *reloc = brq->owner.priv;
+	struct ftl_reloc *reloc = cntx;
 
-	if (brq->success) {
-		/*
-		 * Now we have metadata and we can move this band to
-		 * the ready list
-		 */
-		LIST_REMOVE(band, list_entry);
-		LIST_INSERT_HEAD(&reloc->list_ready, band, list_entry);
+	if (spdk_likely(status)) {
+		reloc->band = band;
+
 		flt_band_iter_init(band);
-		ftl_band_iter_advance(band, ftl_head_md_num_blocks(dev));
-	} else {
-		/* An error, move band back to the closed band list */
-		LIST_REMOVE(band, list_entry);
-		LIST_INSERT_HEAD(&dev->shut_bands, band, list_entry);
+		ftl_band_iter_advance(band, ftl_head_md_num_blocks(band->dev));
 	}
-
-}
-
-static int _prepare_band(struct ftl_reloc *reloc, struct ftl_band *band)
-{
-	int rc;
-	struct spdk_ftl_dev *dev = band->dev;
-	struct ftl_basic_rq *rq = &band->metadata_rq;
-
-	if (ftl_band_alloc_lba_map(band)) {
-		return -ENOMEM;
-	}
-
-	/* Read LBA map */
-	ftl_basic_rq_init(dev, rq, band->lba_map.map,
-			ftl_lba_map_num_blocks(dev));
-	ftl_basic_rq_set_owner(rq, _read_lba_map_cb, reloc);
-
-	rq->io.band = band;
-	rq->io.addr = ftl_band_lba_map_addr(band, 0);
-	rq->io.zone = ftl_band_zone_from_addr(band, rq->io.addr);
-
-	rc = ftl_band_basic_rq_read(band, &band->metadata_rq);
-	if (rc) {
-		return rc;
-	}
-
-	/* Move band the pending list of reloc */
-	LIST_REMOVE(band, list_entry);
-	LIST_INSERT_HEAD(&reloc->list_pending, band, list_entry);
-
-	return 0;
-}
-
-static void _release_empty_bands(struct ftl_reloc *reloc)
-{
-	struct ftl_band *next, *iter;
-
-	LIST_FOREACH_SAFE(iter, &reloc->list_ready, list_entry, next) {
-		if (ftl_band_empty(iter)) {
-			if (ftl_band_qd(iter) && iter->state == FTL_BAND_STATE_CLOSED) {
-				ftl_band_release_lba_map(iter);
-				ftl_band_set_state(iter, FTL_BAND_STATE_FREE);
-			} else {
-				/* XXX */
-				abort();
-				assert(0);
-			}
-		}
-	}
+	reloc->band_waiting = false;
 }
 
 static struct ftl_band *_get_band(struct ftl_reloc *reloc)
 {
 	struct spdk_ftl_dev *dev = reloc->dev;
-	struct ftl_band *band = NULL, *iter;
+	struct ftl_band *band = reloc->band;
 
-	LIST_FOREACH(iter, &reloc->list_ready, list_entry) {
-		if (!ftl_band_full(iter, iter->iter.offset)) {
-			band = iter;
-			break;
+	if (band) {
+		if (ftl_band_full(band, band->iter.offset) && !reloc->halt) {
+			LIST_INSERT_HEAD(&reloc->band_done, band, list_entry);
+			reloc->band = NULL;
+		} else {
+			return band;
 		}
-	}
 
-	if (spdk_likely(band)) {
-		return band;
-	}
+		return NULL;
+	} else {
+		if (!reloc->band_waiting) {
+			if (!ftl_needs_defrag(dev)) {
+				return NULL;
+			}
 
-	if (!ftl_needs_defrag(dev)) {
+			ftl_band_get_next_gc(dev, _get_band_cb, reloc);
+			reloc->band_waiting = true;
+		}
+
 		return NULL;
 	}
-
-	if (!LIST_EMPTY(&reloc->list_pending)) {
-		/* Still waiting for preparing band */
-		return NULL;
-	}
-
-	band = ftl_band_get_next_to_defrag(dev);
-	if (!band) {
-		return NULL;
-	}
-
-	_prepare_band(reloc, band);
-	return NULL;
 }
 
 static void _move_read_cb(struct ftl_rq *rq)
@@ -1396,12 +1331,15 @@ static void _move_run(struct ftl_reloc *reloc, struct ftl_reloc_move *mv)
 {
 	switch(mv->state) {
 	case FTL_RELOC_STATE_READ: {
-		struct ftl_band* band = _get_band(reloc);
-		if (!band) {
-			if (spdk_unlikely(reloc->halt) && !reloc->dev->nv_cache.compaction_active_count) {
-				mv->state = FTL_RELOC_STATE_HALT;
-			}
+		struct ftl_band* band;
 
+		if (spdk_unlikely(reloc->halt)) {
+			mv->state = FTL_RELOC_STATE_HALT;
+			break;
+		}
+
+		band = _get_band(reloc);
+		if (!band) {
 			break;
 		}
 
@@ -1410,6 +1348,11 @@ static void _move_run(struct ftl_reloc *reloc, struct ftl_reloc_move *mv)
 	break;
 
 	case FTL_RELOC_STATE_WRITE:
+		if (spdk_unlikely(reloc->halt)) {
+			mv->state = FTL_RELOC_STATE_HALT;
+			break;
+		}
+
 		_move_write(reloc, mv);
 		break;
 
@@ -1421,6 +1364,19 @@ static void _move_run(struct ftl_reloc *reloc, struct ftl_reloc_move *mv)
 		assert(0);
 		abort();
 		break;
+	}
+}
+
+static void _release_bands(struct ftl_reloc *reloc)
+{
+	struct ftl_band* band, *next;
+
+	LIST_FOREACH_SAFE(band, &reloc->band_done, list_entry, next) {
+		if (ftl_band_empty(band) && ftl_band_full(band, band->iter.offset)) {
+			ftl_band_release_lba_map(band);
+			ftl_band_set_state(band, FTL_BAND_STATE_FREE);
+			assert(0 == band->lba_map.ref_cnt);
+		}
 	}
 }
 
@@ -1447,7 +1403,7 @@ ftl_reloc(struct ftl_reloc *reloc)
 	reloc->move_iter = CIRCLEQ_LOOP_NEXT(&reloc->move_cqueue,
 			reloc->move_iter, centry);
 
-	_release_empty_bands(reloc);
+	_release_bands(reloc);
 	return;
 
 	ftl_reloc_process_move_completions(reloc);
