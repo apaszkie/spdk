@@ -696,6 +696,8 @@ static void compaction_process_finish_read(struct ftl_nv_cache_compaction *compa
 		if (md->lba == FTL_LBA_INVALID) {
 			cached_addr.cache_offset++;
 			compaction->rd->iter.idx++;
+			chunk_compaction_advance(compaction,
+					compaction->current_chunk);
 			continue;
 		}
 
