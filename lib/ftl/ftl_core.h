@@ -153,9 +153,6 @@ struct spdk_ftl_dev {
 	/* Number of free bands */
 	size_t					num_free;
 
-	/* List of write pointers */
-	LIST_HEAD(, ftl_wptr)			wptr_list;
-
 	/* Logical -> physical table */
 	void					*l2p;
 	/* Size of the l2p table */
@@ -197,24 +194,8 @@ struct spdk_ftl_dev {
 	/* Poller */
 	struct spdk_poller			*core_poller;
 
-	/* IO channel array provides means for retrieving write buffer entries
-	 * from their address stored in L2P.  The address is divided into two
-	 * parts - IO channel offset poining at specific IO channel (within this
-	 * array) and entry offset pointing at specific entry within that IO
-	 * channel.
-	 */
-	struct ftl_io_channel			**ioch_array;
-	TAILQ_HEAD(, ftl_io_channel)		ioch_queue;
+	/* Number of IO channels */
 	uint64_t				num_io_channels;
-	/* Value required to shift address of a write buffer entry to retrieve
-	 * the IO channel it's part of.  The other part of the address describes
-	 * the offset of an entry within the IO channel's entry array.
-	 */
-	uint64_t				ioch_shift;
-
-	TAILQ_HEAD(, ftl_io)			reloc_queue;
-	size_t					reloc_outstanding;
-	size_t					user_outstanding;
 
 	/* Devices' list */
 	STAILQ_ENTRY(spdk_ftl_dev)		stailq;
@@ -223,11 +204,13 @@ struct spdk_ftl_dev {
 	 * Needed fields below
 	 */
 
+	TAILQ_HEAD(, ftl_io)			retry_sq;
+
 	/* Writer for user IOs */
-	struct ftl_writer writer_user;
+	struct ftl_writer			writer_user;
 
 	/* Writer for GC IOs */
-	struct ftl_writer writer_gc;
+	struct ftl_writer			writer_gc;
 };
 
 struct ftl_nv_cache_header {

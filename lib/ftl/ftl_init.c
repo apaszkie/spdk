@@ -300,6 +300,7 @@ ftl_init_lba_map_pools(struct spdk_ftl_dev *dev)
 	if (!dev->queue) {
 		return -ENOMEM;
 	}
+	TAILQ_INIT(&dev->retry_sq);
 
 	rc = snprintf(pool_name, sizeof(pool_name), "%s-%s", dev->name, "ftl-lba-pool");
 	if (rc < 0 || rc >= POOL_NAME_LEN) {
@@ -339,7 +340,6 @@ ftl_init_lba_map_pools(struct spdk_ftl_dev *dev)
 static void
 ftl_init_wptr_list(struct spdk_ftl_dev *dev)
 {
-	LIST_INIT(&dev->wptr_list);
 	LIST_INIT(&dev->flush_list);
 	LIST_INIT(&dev->band_flush_list);
 }
@@ -995,25 +995,6 @@ ftl_dev_init_zones(struct ftl_dev_init_ctx *init_ctx)
 	return 0;
 }
 
-static void
-ftl_io_channel_register(void *ctx)
-{
-	struct ftl_io_channel *ioch = ctx;
-	struct spdk_ftl_dev *dev = ioch->dev;
-	uint32_t ioch_index;
-
-	for (ioch_index = 0; ioch_index < dev->conf.max_io_channels; ++ioch_index) {
-		if (dev->ioch_array[ioch_index] == NULL) {
-			dev->ioch_array[ioch_index] = ioch;
-			ioch->index = ioch_index;
-			break;
-		}
-	}
-
-	assert(ioch_index < dev->conf.max_io_channels);
-	TAILQ_INSERT_TAIL(&dev->ioch_queue, ioch, tailq);
-}
-
 static int
 ftl_io_channel_create_cb(void *io_device, void *ctx)
 {
@@ -1047,12 +1028,11 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 		return -1;
 	}
 
-	ioch->index = FTL_IO_CHANNEL_INDEX_INVALID;
 	ioch->dev = dev;
-	ioch->elem_size = sizeof(struct ftl_md_io);
+	ioch->io_pool_elem_size = sizeof(struct ftl_md_io);
 	ioch->io_pool = spdk_mempool_create(mempool_name,
 					    dev->conf.user_io_pool_size,
-					    ioch->elem_size,
+					    ioch->io_pool_elem_size,
 					    dev->conf.user_io_pool_size,
 					    SPDK_ENV_SOCKET_ID_ANY);
 	if (!ioch->io_pool) {
@@ -1062,7 +1042,6 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 	}
 
 	TAILQ_INIT(&ioch->cq);
-	TAILQ_INIT(&ioch->retry_queue);
 	ioch->poller = SPDK_POLLER_REGISTER(ftl_io_channel_poll, ioch, 0);
 	if (!ioch->poller) {
 		SPDK_ERRLOG("Failed to register IO channel poller\n");
@@ -1070,7 +1049,6 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 	}
 
 	_ioch->ioch = ioch;
-	spdk_thread_send_msg(ftl_get_core_thread(dev), ftl_io_channel_register, ioch);
 	return 0;
 
 fail_poller:
@@ -1086,12 +1064,6 @@ ftl_io_channel_unregister(void *ctx)
 	struct ftl_io_channel *ioch = ctx;
 	struct spdk_ftl_dev *dev = ioch->dev;
 	uint32_t num_io_channels __attribute__((unused));
-
-	assert(ioch->index < dev->conf.max_io_channels);
-	assert(dev->ioch_array[ioch->index] == ioch);
-
-	dev->ioch_array[ioch->index] = NULL;
-	TAILQ_REMOVE(&dev->ioch_queue, ioch, tailq);
 
 	num_io_channels = __atomic_fetch_sub(&dev->num_io_channels, 1, __ATOMIC_SEQ_CST);
 	assert(num_io_channels > 0);
@@ -1118,10 +1090,6 @@ ftl_io_channel_destroy_cb(void *io_device, void *ctx)
 {
 	struct _ftl_io_channel *_ioch = ctx;
 	struct ftl_io_channel *ioch = _ioch->ioch;
-
-	/* Mark the IO channel as being flush to force out any unwritten entries */
-	ioch->flush = true;
-
 	_ftl_io_channel_destroy_cb(ioch);
 }
 
@@ -1130,13 +1098,6 @@ ftl_dev_init_io_channel(struct spdk_ftl_dev *dev)
 {
 	/* Align the IO channels to nearest power of 2 to allow for easy addr bit shift */
 	dev->conf.max_io_channels = spdk_align32pow2(dev->conf.max_io_channels);
-	dev->ioch_shift = spdk_u32log2(dev->conf.max_io_channels);
-
-	dev->ioch_array = calloc(dev->conf.max_io_channels, sizeof(*dev->ioch_array));
-	if (!dev->ioch_array) {
-		SPDK_ERRLOG("Failed to allocate IO channel array\n");
-		return -1;
-	}
 
 	if (dev->md_size > 0) {
 		dev->md_buf = spdk_zmalloc(dev->md_size * dev->xfer_size * dev->conf.user_io_pool_size,
@@ -1147,8 +1108,6 @@ ftl_dev_init_io_channel(struct spdk_ftl_dev *dev)
 			return -1;
 		}
 	}
-
-	TAILQ_INIT(&dev->ioch_queue);
 
 	ftl_writer_init(dev, &dev->writer_user, SPDK_FTL_LIMIT_HIGH);
 	ftl_writer_init(dev, &dev->writer_gc, SPDK_FTL_LIMIT_CRIT);
@@ -1309,8 +1268,6 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 	}
 	pthread_mutex_unlock(&g_ftl_queue_lock);
 
-	assert(LIST_EMPTY(&dev->wptr_list));
-
 	ftl_dev_dump_bands(dev);
 	ftl_dev_dump_stats(dev);
 
@@ -1340,7 +1297,6 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 
 	spdk_free(dev->md_buf);
 	assert(dev->num_io_channels == 0);
-	free(dev->ioch_array);
 	free(dev->name);
 	free(dev->bands);
 	if (dev->l2p_pmem_len != 0) {
@@ -1361,8 +1317,6 @@ spdk_ftl_dev_init_in_core_thread(void *arg)
 {
 	struct ftl_dev_init_ctx *init_ctx = arg;
 	struct spdk_ftl_dev *dev = init_ctx->dev;
-
-	TAILQ_INIT(&dev->reloc_queue);
 
 	if (ftl_dev_init_base_bdev(dev, init_ctx->opts.base_bdev)) {
 		SPDK_ERRLOG("Unsupported underlying device\n");

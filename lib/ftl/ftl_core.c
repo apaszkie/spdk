@@ -277,21 +277,11 @@ ftl_get_limit(const struct spdk_ftl_dev *dev, int type)
 static int
 ftl_shutdown_complete(struct spdk_ftl_dev *dev)
 {
-	struct ftl_io_channel *ioch = ftl_io_channel_get_ctx(dev->ioch);
-
 	if (__atomic_load_n(&dev->num_inflight, __ATOMIC_SEQ_CST)) {
 		return 0;
 	}
 
 	if (__atomic_load_n(&dev->num_io_channels, __ATOMIC_SEQ_CST) != 1) {
-		return 0;
-	}
-
-	if (!LIST_EMPTY(&dev->wptr_list)) {
-		return 0;
-	}
-
-	if (!TAILQ_EMPTY(&ioch->retry_queue)) {
 		return 0;
 	}
 
@@ -453,7 +443,7 @@ ftl_submit_read(struct ftl_io *io)
 		if (spdk_unlikely(rc)) {
 			if (rc == -ENOMEM) {
 				ioch = ftl_io_channel_get_ctx(dev->base_ioch);
-				TAILQ_INSERT_TAIL(&ioch->retry_queue, io, queue_entry);
+				TAILQ_INSERT_TAIL(&dev->retry_sq, io, queue_entry);
 				rc = 0;
 			} else {
 				ftl_io_fail(io, rc);
@@ -737,15 +727,6 @@ _handle_io(void *ctx)
 
 void ftl_io_write(struct ftl_io *io)
 {
-	struct ftl_io_channel *ioch = ftl_io_channel_get_ctx(io->ioch);
-
-	/* Put the IO on retry queue in case IO channel is not initialized */
-	if (spdk_unlikely(ioch->index == FTL_IO_CHANNEL_INDEX_INVALID)) {
-		io->status = false;
-		ftl_io_complete(io);
-		return;
-	}
-
 	assert(ftl_check_core_thread(io->dev));
 
 	if (!(io->flags & FTL_IO_MD) && !(io->flags & FTL_IO_WEAK)) {
@@ -931,9 +912,8 @@ ftl_io_channel_poll(void *arg)
 {
 	struct ftl_io_channel *ch = arg;
 	struct ftl_io *io, *next;
-	TAILQ_HEAD(, ftl_io) retry_queue;
 
-	if (TAILQ_EMPTY(&ch->cq) && TAILQ_EMPTY(&ch->retry_queue)) {
+	if (TAILQ_EMPTY(&ch->cq)) {
 		return SPDK_POLLER_IDLE;
 	}
 
@@ -943,22 +923,6 @@ ftl_io_channel_poll(void *arg)
 			io->user_fn(io->cb_ctx, io->status);
 		} else {
 			break;
-		}
-	}
-	/*
-	 * Create local copy of the retry queue to prevent from infinite retrying if IO will be
-	 * inserted to the retry queue again
-	 */
-	TAILQ_INIT(&retry_queue);
-	TAILQ_SWAP(&ch->retry_queue, &retry_queue, ftl_io, queue_entry);
-
-	while (!TAILQ_EMPTY(&retry_queue)) {
-		io = TAILQ_FIRST(&retry_queue);
-		TAILQ_REMOVE(&retry_queue, io, queue_entry);
-		if (io->type == FTL_IO_WRITE) {
-			ftl_io_write(io);
-		} else {
-			ftl_io_read(io);
 		}
 	}
 

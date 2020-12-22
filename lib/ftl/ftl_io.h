@@ -132,28 +132,17 @@ struct ftl_io_init_opts {
 
 };
 
-struct ftl_io_channel;
-
-#define FTL_IO_CHANNEL_INDEX_INVALID ((uint64_t)-1)
-
 struct ftl_io_channel {
 	/* Device */
 	struct spdk_ftl_dev			*dev;
 	/* IO pool element size */
-	size_t					elem_size;
-	/* Index within the IO channel array */
-	uint64_t				index;
+	size_t					io_pool_elem_size;
 	/* IO pool */
 	struct spdk_mempool			*io_pool;
 	/* Poller used for completing write requests and retrying IO */
 	struct spdk_poller			*poller;
-	/* Write completion queue */
+	/* User IO queue */
 	TAILQ_HEAD(, ftl_io)			cq;
-	TAILQ_HEAD(, ftl_io)			retry_queue;
-	TAILQ_ENTRY(ftl_io_channel)		tailq;
-
-	/* Means that the IO channel is being flushed */
-	bool					flush;
 };
 
 /* General IO descriptor */

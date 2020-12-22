@@ -437,7 +437,7 @@ ftl_io_alloc(struct spdk_io_channel *ch)
 		return NULL;
 	}
 
-	memset(io, 0, ioch->elem_size);
+	memset(io, 0, ioch->io_pool_elem_size);
 	io->ioch = ch;
 
 	return io;
