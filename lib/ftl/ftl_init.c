@@ -754,7 +754,7 @@ ftl_restore_l2p(struct spdk_ftl_dev *dev)
 	FILE *file;
 	size_t count;
 	struct timespec begin, end;
-#define NUM_THREADS 90
+#define NUM_THREADS 1
 	pthread_t thread_id[NUM_THREADS];
 	char uuid[SPDK_UUID_STRING_LEN];
 	char l2p_path[256];
