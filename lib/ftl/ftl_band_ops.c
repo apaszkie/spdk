@@ -346,13 +346,15 @@ ftl_band_get_next_gc(struct spdk_ftl_dev *dev, ftl_band_ops_cb cb, void *cntx)
 	int rc;
 	struct ftl_band *band = ftl_band_search_next_to_defrag(dev);
 
-	/* Only one owner is allowed */
-	assert(!band->iter.queue_depth);
-
+	/*if disk is very small, GC start very early that no band is ready for it*/
 	if (spdk_unlikely(!band)) {
 		cb(NULL, cntx, false);
 		return;
 	}
+
+	/* Only one owner is allowed */
+	assert(!band->iter.queue_depth);
+
 
 	assert(!band->owner.ops_fn);
 	assert(!band->owner.priv);
