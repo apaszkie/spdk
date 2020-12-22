@@ -246,7 +246,6 @@ ftl_io_init_internal(const struct ftl_io_init_opts *opts)
 	ftl_io_clear(io);
 	ftl_io_init(io, dev, opts->cb_fn, opts->cb_ctx, opts->flags | FTL_IO_INTERNAL, opts->type);
 
-	io->batch = opts->batch;
 	io->band = opts->band;
 	io->md = opts->md;
 	io->iov = &io->iov_buf[0];
@@ -329,11 +328,6 @@ ftl_io_user_init(struct spdk_io_channel *_ioch, struct ftl_io *io, uint64_t lba,
 	memset(io, 0, sizeof(struct ftl_io));
 	io->ioch = _ioch;
 
-	if (pthread_spin_init(&io->lock, PTHREAD_PROCESS_PRIVATE)) {
-		SPDK_ERRLOG("pthread_spin_init failed\n");
-		return -ENOMEM;
-	}
-
 	ftl_io_init(io, dev, _ftl_user_cb, cb_ctx, 0, type);
 	io->lba.single = lba;
 	io->user_fn = cb_fn;
@@ -350,12 +344,6 @@ _ftl_io_free(struct ftl_io *io)
 {
 	struct ftl_io_channel *ioch;
 
-	/* FIXME assert(LIST_EMPTY(&io->children)); */
-
-	if (pthread_spin_destroy(&io->lock)) {
-		SPDK_ERRLOG("pthread_spin_destroy failed\n");
-	}
-
 	if (io->flags & FTL_IO_INTERNAL) {
 		ioch = ftl_io_channel_get_ctx(io->ioch);
 		spdk_mempool_put(ioch->io_pool, io);
@@ -368,15 +356,12 @@ ftl_io_remove_child(struct ftl_io *io)
 	struct ftl_io *parent = io->parent;
 	bool parent_done;
 
-	pthread_spin_lock(&parent->lock);
 	LIST_REMOVE(io, child_entry);
 	parent_done = parent->done && LIST_EMPTY(&parent->children);
 
 	if (io->status) {
 		parent->status = io->status;
 	}
-
-	pthread_spin_unlock(&parent->lock);
 
 	return parent_done;
 }
@@ -390,10 +375,8 @@ ftl_io_complete(struct ftl_io *io)
 
 	io->flags &= ~FTL_IO_INITIALIZED;
 
-	pthread_spin_lock(&io->lock);
 	complete = LIST_EMPTY(&io->children);
 	io->done = true;
-	pthread_spin_unlock(&io->lock);
 
 	if (complete) {
 		if (io->cb_fn) {
@@ -422,10 +405,7 @@ ftl_io_alloc_child(struct ftl_io *parent)
 
 	ftl_io_init(io, parent->dev, NULL, NULL, parent->flags, parent->type);
 	io->parent = parent;
-
-	pthread_spin_lock(&parent->lock);
 	LIST_INSERT_HEAD(&parent->children, io, child_entry);
-	pthread_spin_unlock(&parent->lock);
 
 	return io;
 }
@@ -460,12 +440,6 @@ ftl_io_alloc(struct spdk_io_channel *ch)
 	memset(io, 0, ioch->elem_size);
 	io->ioch = ch;
 
-	if (pthread_spin_init(&io->lock, PTHREAD_PROCESS_PRIVATE)) {
-		SPDK_ERRLOG("pthread_spin_init failed\n");
-		spdk_mempool_put(ioch->io_pool, io);
-		return NULL;
-	}
-
 	return io;
 }
 
@@ -480,9 +454,7 @@ void
 ftl_io_clear(struct ftl_io *io)
 {
 	ftl_io_reset(io);
-
 	io->flags = 0;
-	io->batch = NULL;
 	io->band = NULL;
 }
 

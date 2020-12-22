@@ -61,7 +61,6 @@ struct ftl_band;
 struct ftl_zone;
 struct ftl_io;
 struct ftl_restore;
-struct ftl_wptr;
 struct ftl_flush;
 struct ftl_reloc;
 struct ftl_anm_event;

@@ -44,7 +44,6 @@
 
 struct spdk_ftl_dev;
 struct ftl_band;
-struct ftl_batch;
 struct ftl_io;
 
 typedef int (*ftl_md_pack_fn)(struct ftl_band *);
@@ -109,9 +108,6 @@ struct ftl_io_init_opts {
 
 	/* IO type */
 	enum ftl_io_type			type;
-
-	/* Transfer batch, set for IO going through the write buffer */
-	struct ftl_batch			*batch;
 
 	/* Band to which the IO is directed */
 	struct ftl_band				*band;
@@ -179,9 +175,6 @@ struct ftl_io {
 	/* First block address */
 	struct ftl_addr				addr;
 
-	/* First block address XXX Set it */
-	struct ftl_addr				weak_addr;
-
 	/* Number of processed blocks */
 	size_t					pos;
 
@@ -205,9 +198,6 @@ struct ftl_io {
 
 	/* Offset within the iovec (in blocks) */
 	size_t					iov_off;
-
-	/* Transfer batch (valid only for writes going through the write buffer) */
-	struct ftl_batch			*batch;
 
 	/* Band this IO is being written to */
 	struct ftl_band				*band;
@@ -244,8 +234,6 @@ struct ftl_io {
 	LIST_HEAD(, ftl_io)			children;
 	/* Child list link */
 	LIST_ENTRY(ftl_io)			child_entry;
-	/* Children lock */
-	pthread_spinlock_t			lock;
 
 	/* Trace group id */
 	uint64_t				trace;
@@ -254,11 +242,7 @@ struct ftl_io {
 	TAILQ_ENTRY(ftl_io)			queue_entry;
 
 	/* Reference to the chunk within NV cache */
-	struct ftl_nv_cache_chunk *nv_cache_chunk;
-
-	struct ftl_reloc_chunk			chunk[128];
-
-	size_t					num_chunks;
+	struct ftl_nv_cache_chunk 		*nv_cache_chunk;
 
 	struct ftl_basic_rq			rq;
 };
