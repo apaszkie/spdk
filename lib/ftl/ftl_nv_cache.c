@@ -377,7 +377,7 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name)
 	/* Start compaction when full chunks exceed given % of entire chunks */
 	nv_cache->chunk_compaction_threshold = nv_cache->chunk_count * 8 / 10;
 	TAILQ_INIT(&nv_cache->compaction_list);
-	for (i = 0; i < 256; i++) {
+	for (i = 0; i < 8; i++) {
 		struct ftl_nv_cache_compaction *compact = compaction_alloc(dev);
 
 		if (!compact) {
