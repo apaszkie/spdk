@@ -141,7 +141,6 @@ ftl_band_init_md(struct ftl_band *band)
 		return -ENOMEM;
 	}
 
-	pthread_spin_init(&lba_map->lock, PTHREAD_PROCESS_PRIVATE);
 	ftl_band_md_clear(band);
 	return 0;
 }
@@ -300,7 +299,8 @@ ftl_init_lba_map_pools(struct spdk_ftl_dev *dev)
 	if (!dev->queue) {
 		return -ENOMEM;
 	}
-	TAILQ_INIT(&dev->retry_sq);
+	TAILQ_INIT(&dev->rd_retry_sq);
+	TAILQ_INIT(&dev->wr_retry_sq);
 
 	rc = snprintf(pool_name, sizeof(pool_name), "%s-%s", dev->name, "ftl-lba-pool");
 	if (rc < 0 || rc >= POOL_NAME_LEN) {
@@ -740,10 +740,8 @@ ftl_restore_l2p_worker(void *ctx)
 		assert(lba != FTL_LBA_INVALID);
 		offset = ftl_band_block_offset_from_addr(band, addr);
 
-		pthread_spin_lock(&lba_map->lock);
 		lba_map->num_vld++;
 		spdk_bit_array_set(lba_map->vld, offset);
-		pthread_spin_unlock(&lba_map->lock);
 	}
 
 	return NULL;

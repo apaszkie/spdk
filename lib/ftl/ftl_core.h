@@ -204,7 +204,8 @@ struct spdk_ftl_dev {
 	 * Needed fields below
 	 */
 
-	TAILQ_HEAD(, ftl_io)			retry_sq;
+	TAILQ_HEAD(, ftl_io)			rd_retry_sq;
+	TAILQ_HEAD(, ftl_io)			wr_retry_sq;
 
 	/* Writer for user IOs */
 	struct ftl_writer			writer_user;

@@ -230,6 +230,9 @@ struct ftl_io {
 	/* Used by retry and write completion queues */
 	TAILQ_ENTRY(ftl_io)			queue_entry;
 
+	/* Used by IO channel polling for completion */
+	TAILQ_ENTRY(ftl_io)			user_queue_entry;
+
 	/* Reference to the chunk within NV cache */
 	struct ftl_nv_cache_chunk 		*nv_cache_chunk;
 

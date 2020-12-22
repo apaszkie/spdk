@@ -286,11 +286,7 @@ ftl_band_md_pack_tail(struct ftl_band *band)
 	/* Clear out the buffer */
 	memset(tail, 0, ftl_tail_md_hdr_num_blocks() * FTL_BLOCK_SIZE);
 	tail->num_blocks = ftl_get_num_blocks_in_band(dev);
-
-	pthread_spin_lock(&lba_map->lock);
 	spdk_bit_array_store_mask(lba_map->vld, vld_offset);
-	pthread_spin_unlock(&lba_map->lock);
-
 	ftl_set_md_hdr(band, &tail->hdr, ftl_tail_md_num_blocks(dev) * FTL_BLOCK_SIZE);
 }
 
@@ -452,13 +448,10 @@ ftl_band_set_addr(struct ftl_band *band, uint64_t lba, struct ftl_addr addr)
 	assert(lba != FTL_LBA_INVALID);
 
 	offset = ftl_band_block_offset_from_addr(band, addr);
-	pthread_spin_lock(&lba_map->lock);
 
 	lba_map->num_vld++;
 	lba_map->map[offset] = lba;
 	spdk_bit_array_set(lba_map->vld, offset);
-
-	pthread_spin_unlock(&lba_map->lock);
 }
 
 void

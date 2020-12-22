@@ -308,8 +308,8 @@ ftl_shutdown_complete(struct spdk_ftl_dev *dev)
 	return 1;
 }
 
-static int
-ftl_invalidate_addr_unlocked(struct spdk_ftl_dev *dev, struct ftl_addr addr)
+int
+ftl_invalidate_addr(struct spdk_ftl_dev *dev, struct ftl_addr addr)
 {
 	struct ftl_band *band = ftl_band_from_addr(dev, addr);
 	struct ftl_lba_map *lba_map = &band->lba_map;
@@ -327,22 +327,6 @@ ftl_invalidate_addr_unlocked(struct spdk_ftl_dev *dev, struct ftl_addr addr)
 	}
 
 	return 0;
-}
-
-int
-ftl_invalidate_addr(struct spdk_ftl_dev *dev, struct ftl_addr addr)
-{
-	struct ftl_band *band;
-	int rc;
-
-	assert(!ftl_addr_cached(addr));
-	band = ftl_band_from_addr(dev, addr);
-
-	pthread_spin_lock(&band->lba_map.lock);
-	rc = ftl_invalidate_addr_unlocked(dev, addr);
-	pthread_spin_unlock(&band->lba_map.lock);
-
-	return rc;
 }
 
 static int
@@ -403,7 +387,6 @@ static int
 ftl_submit_read(struct ftl_io *io)
 {
 	struct spdk_ftl_dev *dev = io->dev;
-	struct ftl_io_channel *ioch;
 	struct ftl_addr addr;
 	int rc = 0, num_blocks;
 
@@ -442,8 +425,7 @@ ftl_submit_read(struct ftl_io *io)
 					   num_blocks, ftl_io_cmpl_cb, io);
 		if (spdk_unlikely(rc)) {
 			if (rc == -ENOMEM) {
-				ioch = ftl_io_channel_get_ctx(dev->base_ioch);
-				TAILQ_INSERT_TAIL(&dev->retry_sq, io, queue_entry);
+				TAILQ_INSERT_TAIL(&dev->rd_retry_sq, io, queue_entry);
 				rc = 0;
 			} else {
 				ftl_io_fail(io, rc);
@@ -710,6 +692,7 @@ static void
 _handle_io(void *ctx)
 {
 	struct ftl_io *io = ctx;
+	struct spdk_ftl_dev *dev = io->dev;
 
 	switch(io->type) {
 	case FTL_IO_READ:
@@ -717,7 +700,13 @@ _handle_io(void *ctx)
 		break;
 
 	case FTL_IO_WRITE:
-		ftl_io_write(io);
+		if (!ftl_nv_cache_full(dev)) {
+			ftl_io_write(io);
+		} else {
+			/* No space in NV cache */
+			TAILQ_INSERT_TAIL(&dev->wr_retry_sq, io, queue_entry);
+		}
+
 		break;
 	default:
 		io->status = false;
@@ -761,7 +750,7 @@ static int _queue_io(struct spdk_ftl_dev *dev, struct ftl_io *io)
 
 	if (spdk_likely(result)) {
 		struct ftl_io_channel *ioch = ftl_io_channel_get_ctx(io->ioch);
-		TAILQ_INSERT_TAIL(&ioch->cq, io, queue_entry);
+		TAILQ_INSERT_TAIL(&ioch->cq, io, user_queue_entry);
 		return 0;
 	} else {
 		return -EAGAIN;
@@ -917,12 +906,10 @@ ftl_io_channel_poll(void *arg)
 		return SPDK_POLLER_IDLE;
 	}
 
-	TAILQ_FOREACH_SAFE(io, &ch->cq, queue_entry, next) {
+	TAILQ_FOREACH_SAFE(io, &ch->cq, user_queue_entry, next) {
 		if (io->user_done) {
-			TAILQ_REMOVE(&ch->cq, io, queue_entry);
+			TAILQ_REMOVE(&ch->cq, io, user_queue_entry);
 			io->user_fn(io->cb_ctx, io->status);
-		} else {
-			break;
 		}
 	}
 
@@ -932,11 +919,44 @@ ftl_io_channel_poll(void *arg)
 static void
 ftl_process_io_queue(struct spdk_ftl_dev *dev)
 {
-	#define FTL_IO_QUEUE_BATCH 8
+	#define FTL_IO_QUEUE_BATCH 16
 	void *ios[FTL_IO_QUEUE_BATCH];
 	size_t count, i;
+	TAILQ_HEAD(, ftl_io) retry_queue;
+	struct ftl_io *io;
 
-	count = spdk_ring_dequeue(dev->queue, ios, FTL_IO_QUEUE_BATCH);
+	if (!TAILQ_EMPTY(&dev->rd_retry_sq)) {
+		/* Retry reads */
+		TAILQ_INIT(&retry_queue);
+		TAILQ_SWAP(&dev->rd_retry_sq, &retry_queue, ftl_io, queue_entry);
+		while (!TAILQ_EMPTY(&retry_queue)) {
+			io = TAILQ_FIRST(&retry_queue);
+			TAILQ_REMOVE(&retry_queue, io, queue_entry);
+
+			assert(io->type == FTL_IO_READ);
+			ftl_io_read(io);
+		}
+	}
+
+        if (!ftl_nv_cache_full(dev) && !TAILQ_EMPTY(&dev->wr_retry_sq)) {
+		/* Retry writes */
+        	TAILQ_INIT(&retry_queue);
+        	TAILQ_SWAP(&dev->wr_retry_sq, &retry_queue, ftl_io, queue_entry);
+		while (!TAILQ_EMPTY(&retry_queue) && !ftl_nv_cache_full(dev)) {
+			io = TAILQ_FIRST(&retry_queue);
+			TAILQ_REMOVE(&retry_queue, io, queue_entry);
+
+			assert(io->type == FTL_IO_WRITE);
+			ftl_io_write(io);
+		}
+		if (!TAILQ_EMPTY(&retry_queue)) {
+			/* No more space in NV cache, restore retry queue */
+			TAILQ_CONCAT(&dev->wr_retry_sq, &retry_queue, queue_entry);
+			assert(TAILQ_EMPTY(&retry_queue));
+		}
+        }
+
+        count = spdk_ring_dequeue(dev->queue, ios, FTL_IO_QUEUE_BATCH);
         if (count == 0) {
         	return;
         }

@@ -81,9 +81,6 @@ enum ftl_lba_map_seg_state {
 };
 
 struct ftl_lba_map {
-	/* LBA/vld map lock */
-	pthread_spinlock_t			lock;
-
 	/* Number of valid LBAs */
 	size_t					num_vld;
 
@@ -309,13 +306,10 @@ ftl_band_block_offset_valid(struct ftl_band *band, size_t block_off)
 {
 	struct ftl_lba_map *lba_map = &band->lba_map;
 
-	pthread_spin_lock(&lba_map->lock);
 	if (spdk_bit_array_get(lba_map->vld, block_off)) {
-		pthread_spin_unlock(&lba_map->lock);
 		return 1;
 	}
 
-	pthread_spin_unlock(&lba_map->lock);
 	return 0;
 }
 

@@ -61,7 +61,6 @@ ftl_band_validate_md(struct ftl_band *band)
 
 	size = ftl_get_num_blocks_in_band(dev);
 
-	pthread_spin_lock(&lba_map->lock);
 	for (i = 0; i < size; ++i) {
 		if (!spdk_bit_array_get(lba_map->vld, i)) {
 			continue;
@@ -86,8 +85,6 @@ ftl_band_validate_md(struct ftl_band *band)
 		}
 
 	}
-
-	pthread_spin_unlock(&lba_map->lock);
 
 	return valid;
 }
