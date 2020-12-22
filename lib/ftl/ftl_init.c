@@ -1598,7 +1598,7 @@ ftl_halt_poller(void *ctx)
 }
 
 static void
-ftl_reloc_free_tasks_cb(void *ctx)
+ftl_add_halt_poller(void *ctx)
 {
 	struct ftl_dev_init_ctx *fini_ctx = ctx;
 	struct spdk_ftl_dev *dev = fini_ctx->dev;
@@ -1607,37 +1607,6 @@ ftl_reloc_free_tasks_cb(void *ctx)
 
 	assert(!fini_ctx->poller);
 	fini_ctx->poller = SPDK_POLLER_REGISTER(ftl_halt_poller, fini_ctx, 100);
-}
-
-static int
-ftl_halt_defrag_poller(void *ctx)
-{
-	struct ftl_dev_init_ctx *fini_ctx = ctx;
-	struct spdk_ftl_dev *dev = fini_ctx->dev;
-
-	if (!ftl_reloc_done(dev->reloc)) {
-		return SPDK_POLLER_BUSY;
-	}
-
-	if (ftl_reloc_free_tasks(dev->reloc, ftl_reloc_free_tasks_cb, fini_ctx)) {
-		return SPDK_POLLER_BUSY;
-	}
-
-	spdk_poller_unregister(&fini_ctx->poller);
-
-	return SPDK_POLLER_IDLE;
-}
-
-static void
-ftl_add_halt_poller(void *ctx)
-{
-	struct ftl_dev_init_ctx *fini_ctx = ctx;
-	struct spdk_ftl_dev *dev = fini_ctx->dev;
-
-	dev->reloc_halt_started = true;
-
-	assert(!fini_ctx->poller);
-	fini_ctx->poller = SPDK_POLLER_REGISTER(ftl_halt_defrag_poller, fini_ctx, 100);
 }
 
 static int

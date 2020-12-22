@@ -110,7 +110,6 @@ struct spdk_ftl_dev {
 	int					halt;
 	/* Indicates the device is about to start stopping - use to handle multiple stop request */
 	bool					halt_started;
-	bool					reloc_halt_started;
 
 	struct spdk_ring			*queue;
 

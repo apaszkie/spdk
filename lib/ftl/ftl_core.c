@@ -474,18 +474,6 @@ ftl_submit_read(struct ftl_io *io)
 	return rc;
 }
 
-static void
-ftl_complete_flush(struct ftl_flush *flush)
-{
-	assert(flush->num_req == 0);
-	LIST_REMOVE(flush, list_entry);
-
-	flush->cb.fn(flush->cb.ctx, 0);
-
-	spdk_bit_array_free(&flush->bmap);
-	free(flush);
-}
-
 static inline void
 ftl_update_nv_cache_l2p_update(struct ftl_io *io)
 {
