@@ -96,24 +96,6 @@ struct ftl_global_md {
 	uint64_t				num_lbas;
 };
 
-struct ftl_batch {
-	/* Queue of write buffer entries, can reach up to xfer_size entries */
-	TAILQ_HEAD(, ftl_wbuf_entry)		entries;
-	/* Number of entries in the queue above */
-	uint32_t				num_entries;
-	/* Index within spdk_ftl_dev.batch_array */
-	uint32_t				index;
-	struct iovec				*iov;
-	void					*metadata;
-	TAILQ_ENTRY(ftl_batch)			tailq;
-
-	/* Private data of the entry holder */
-	void					*priv_data;
-
-	/* Callback handler notifying batch job is done */
-	void (*cb)(struct spdk_ftl_dev *ftl, struct ftl_batch *batch);
-};
-
 struct spdk_ftl_dev {
 	/* Device instance */
 	struct spdk_uuid			uuid;
@@ -232,19 +214,6 @@ struct spdk_ftl_dev {
 	 */
 	uint64_t				ioch_shift;
 
-	/* Write buffer batches */
-#define FTL_BATCH_COUNT 4096
-	struct ftl_batch			batch_array[FTL_BATCH_COUNT];
-	/* Iovec buffer used by batches */
-	struct iovec				*iov_buf;
-	/* Batch currently being filled  */
-	struct ftl_batch			*current_batch;
-	/* Full and ready to be sent batches. A batch is put on this queue in
-	 * case it's already filled, but cannot be sent.
-	 */
-	TAILQ_HEAD(, ftl_batch)			pending_batches;
-	TAILQ_HEAD(, ftl_batch)			free_batches;
-
 	TAILQ_HEAD(, ftl_io)			reloc_queue;
 	size_t					reloc_outstanding;
 	size_t					user_outstanding;
@@ -290,7 +259,6 @@ typedef void (*ftl_restore_fn)(struct ftl_restore *, int, void *cb_arg);
 void	ftl_apply_limits(struct spdk_ftl_dev *dev);
 void	ftl_io_read(struct ftl_io *io);
 void	ftl_io_write(struct ftl_io *io);
-int	ftl_flush_wbuf(struct spdk_ftl_dev *dev, spdk_ftl_fn cb_fn, void *cb_arg);
 int	ftl_current_limit(const struct spdk_ftl_dev *dev);
 int	ftl_invalidate_addr(struct spdk_ftl_dev *dev, struct ftl_addr addr);
 int	ftl_task_core(void *ctx);
@@ -306,7 +274,6 @@ int	ftl_restore_device(struct ftl_restore *restore, ftl_restore_fn cb, void *cb_
 void	ftl_restore_nv_cache(struct ftl_restore *restore, ftl_restore_fn cb, void *cb_arg);
 int	ftl_band_set_direct_access(struct ftl_band *band, bool access);
 bool	ftl_addr_is_written(struct ftl_band *band, struct ftl_addr addr);
-int	ftl_flush_active_bands(struct spdk_ftl_dev *dev, spdk_ftl_fn cb_fn, void *cb_arg);
 int	ftl_nv_cache_write_header(struct ftl_nv_cache *nv_cache, bool shutdown,
 				  spdk_bdev_io_completion_cb cb_fn, void *cb_arg);
 int	ftl_nv_cache_scrub(struct ftl_nv_cache *nv_cache, spdk_bdev_io_completion_cb cb_fn,

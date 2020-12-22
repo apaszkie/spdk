@@ -1246,3 +1246,8 @@ void ftl_nv_cache_load_state(struct ftl_nv_cache *nv_cache,
 
 	load_state_iter(cntx);
 }
+
+bool ftl_nv_cache_full(struct spdk_ftl_dev *dev)
+{
+	return 0 == dev->nv_cache.chunk_free_count;
+}

@@ -133,6 +133,8 @@ int ftl_nv_cache_init(struct spdk_ftl_dev *dev, const char *bdev_name);
 
 void ftl_nv_cache_deinit(struct spdk_ftl_dev *dev);
 
+bool ftl_nv_cache_full(struct spdk_ftl_dev *dev);
+
 static inline void ftl_nv_cache_halt(struct ftl_nv_cache *nv_cache)
 {
 	nv_cache->halt = true;

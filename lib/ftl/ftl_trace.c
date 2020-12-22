@@ -238,31 +238,6 @@ ftl_trace_lba_io_init(struct spdk_ftl_dev *dev, const struct ftl_io *io)
 }
 
 void
-ftl_trace_wbuf_fill(struct spdk_ftl_dev *dev, const struct ftl_io *io)
-{
-	assert(io->trace != FTL_TRACE_INVALID_ID);
-
-	spdk_trace_record(FTL_TRACE_WRITE_WBUF_FILL(ftl_trace_io_source(io)), io->trace,
-			  0, 0, ftl_io_current_lba(io));
-}
-
-void
-ftl_trace_wbuf_pop(struct spdk_ftl_dev *dev, const struct ftl_wbuf_entry *entry)
-{
-	uint16_t tpoint_id;
-
-	assert(entry->trace != FTL_TRACE_INVALID_ID);
-
-	if (entry->io_flags & FTL_IO_INTERNAL) {
-		tpoint_id = FTL_TRACE_WBUF_POP(FTL_TRACE_SOURCE_INTERNAL);
-	} else {
-		tpoint_id = FTL_TRACE_WBUF_POP(FTL_TRACE_SOURCE_USER);
-	}
-
-	spdk_trace_record(tpoint_id, entry->trace, 0, entry->addr.offset, entry->lba);
-}
-
-void
 ftl_trace_completion(struct spdk_ftl_dev *dev, const struct ftl_io *io,
 		     enum ftl_trace_completion completion)
 {

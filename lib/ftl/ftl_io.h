@@ -137,41 +137,6 @@ struct ftl_io_init_opts {
 };
 
 struct ftl_io_channel;
-struct ftl_nv_cache_chunk;
-
-struct ftl_wbuf_entry {
-	/* IO channel that owns the write bufer entry */
-	struct ftl_io_channel			*ioch;
-	/* Data payload (single block) */
-	void					*payload;
-	/* Index within the IO channel's wbuf_entries array */
-	uint32_t				index;
-	uint32_t				io_flags;
-	/* Points at the band the data is copied from.  Only valid for internal
-	 * requests coming from reloc.
-	 */
-	struct ftl_band				*band;
-	/* Physical address of that particular block.  Valid once the data has
-	 * been written out.
-	 */
-	struct ftl_addr				addr;
-	/* Logical block address */
-	uint64_t				lba;
-
-	/* Trace ID of the requests the entry is part of */
-	uint64_t				trace;
-
-	/* Private data of the entry holder */
-	void					*priv_data;
-
-	/* Indicates that the entry was written out and is still present in the
-	 * L2P table.
-	 */
-	bool					valid;
-	/* Lock that protects the entry from being evicted from the L2P */
-	pthread_spinlock_t			lock;
-	TAILQ_ENTRY(ftl_wbuf_entry)		tailq;
-};
 
 #define FTL_IO_CHANNEL_INDEX_INVALID ((uint64_t)-1)
 
@@ -191,19 +156,6 @@ struct ftl_io_channel {
 	TAILQ_HEAD(, ftl_io)			retry_queue;
 	TAILQ_ENTRY(ftl_io_channel)		tailq;
 
-	/* Array of write buffer entries */
-	struct ftl_wbuf_entry			*wbuf_entries;
-	/* Write buffer data payload */
-	void					*wbuf_payload;
-	/* Number of write buffer entries */
-	uint32_t				num_entries;
-	/* Write buffer queues */
-	struct spdk_ring			*free_queue;
-	struct spdk_ring			*submit_queue;
-	/* Maximum number of concurrent user writes */
-	uint32_t				qdepth_limit;
-	/* Current number of concurrent user writes */
-	uint32_t				qdepth_current;
 	/* Means that the IO channel is being flushed */
 	bool					flush;
 };
@@ -361,8 +313,6 @@ void ftl_io_advance(struct ftl_io *io, size_t num_blocks);
 size_t ftl_iovec_num_blocks(struct iovec *iov, size_t iov_cnt);
 void *ftl_io_iovec_addr(struct ftl_io *io);
 size_t ftl_io_iovec_len_left(struct ftl_io *io);
-struct ftl_io *ftl_io_wbuf_init(struct spdk_ftl_dev *dev, struct ftl_addr addr,
-				struct ftl_band *band, struct ftl_batch *batch, ftl_io_fn cb);
 struct ftl_io *ftl_io_erase_init(struct ftl_band *band, size_t num_blocks, ftl_io_fn cb);
 int ftl_io_user_init(struct spdk_io_channel *ioch, struct ftl_io *io, uint64_t lba,
 		     size_t num_blocks, struct iovec *iov, size_t iov_cnt, spdk_ftl_fn cb_fn,

@@ -1015,78 +1015,6 @@ ftl_io_channel_register(void *ctx)
 }
 
 static int
-ftl_io_channel_init_wbuf(struct ftl_io_channel *ioch)
-{
-	struct spdk_ftl_dev *dev = ioch->dev;
-	struct ftl_wbuf_entry *entry;
-	uint32_t i;
-	int rc;
-
-	ioch->num_entries = dev->conf.write_buffer_size / FTL_BLOCK_SIZE;
-	ioch->wbuf_entries = calloc(ioch->num_entries, sizeof(*ioch->wbuf_entries));
-	if (ioch->wbuf_entries == NULL) {
-		SPDK_ERRLOG("Failed to allocate write buffer entry array\n");
-		return -1;
-	}
-
-	ioch->qdepth_limit = ioch->num_entries;
-	ioch->wbuf_payload = spdk_zmalloc(dev->conf.write_buffer_size, FTL_BLOCK_SIZE, NULL,
-					  SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-	if (ioch->wbuf_payload == NULL) {
-		SPDK_ERRLOG("Failed to allocate write buffer payload\n");
-		goto error_entries;
-	}
-
-	ioch->free_queue = spdk_ring_create(SPDK_RING_TYPE_SP_SC,
-					    spdk_align32pow2(ioch->num_entries + 1),
-					    SPDK_ENV_SOCKET_ID_ANY);
-	if (ioch->free_queue == NULL) {
-		SPDK_ERRLOG("Failed to allocate free queue\n");
-		goto error_payload;
-	}
-
-	ioch->submit_queue = spdk_ring_create(SPDK_RING_TYPE_SP_SC,
-					      spdk_align32pow2(ioch->num_entries + 1),
-					      SPDK_ENV_SOCKET_ID_ANY);
-	if (ioch->submit_queue == NULL) {
-		SPDK_ERRLOG("Failed to allocate submit queue\n");
-		goto error_free_queue;
-	}
-
-	for (i = 0; i < ioch->num_entries; ++i) {
-		entry = &ioch->wbuf_entries[i];
-		entry->payload = (char *)ioch->wbuf_payload + i * FTL_BLOCK_SIZE;
-		entry->ioch = ioch;
-		entry->index = i;
-		entry->addr.offset = FTL_ADDR_INVALID;
-
-		rc = pthread_spin_init(&entry->lock, PTHREAD_PROCESS_PRIVATE);
-		if (rc != 0) {
-			SPDK_ERRLOG("Failed to initialize spinlock\n");
-			goto error_spinlock;
-		}
-
-		spdk_ring_enqueue(ioch->free_queue, (void **)&entry, 1, NULL);
-	}
-
-	return 0;
-error_spinlock:
-	for (; i > 0; --i) {
-		pthread_spin_destroy(&ioch->wbuf_entries[i - 1].lock);
-	}
-
-	spdk_ring_free(ioch->submit_queue);
-error_free_queue:
-	spdk_ring_free(ioch->free_queue);
-error_payload:
-	spdk_free(ioch->wbuf_payload);
-error_entries:
-	free(ioch->wbuf_entries);
-
-	return -1;
-}
-
-static int
 ftl_io_channel_create_cb(void *io_device, void *ctx)
 {
 	struct spdk_ftl_dev *dev = io_device;
@@ -1123,7 +1051,7 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 	ioch->dev = dev;
 	ioch->elem_size = sizeof(struct ftl_md_io);
 	ioch->io_pool = spdk_mempool_create(mempool_name,
-					    2 * dev->conf.user_io_pool_size,
+					    dev->conf.user_io_pool_size,
 					    ioch->elem_size,
 					    dev->conf.user_io_pool_size,
 					    SPDK_ENV_SOCKET_ID_ANY);
@@ -1141,18 +1069,10 @@ ftl_io_channel_create_cb(void *io_device, void *ctx)
 		goto fail_poller;
 	}
 
-	if (ftl_io_channel_init_wbuf(ioch)) {
-		SPDK_ERRLOG("Failed to initialize IO channel's write buffer\n");
-		goto fail_wbuf;
-	}
-
 	_ioch->ioch = ioch;
-
 	spdk_thread_send_msg(ftl_get_core_thread(dev), ftl_io_channel_register, ioch);
-
 	return 0;
-fail_wbuf:
-	spdk_poller_unregister(&ioch->poller);
+
 fail_poller:
 	spdk_mempool_free(ioch->io_pool);
 	free(ioch);
@@ -1165,7 +1085,7 @@ ftl_io_channel_unregister(void *ctx)
 {
 	struct ftl_io_channel *ioch = ctx;
 	struct spdk_ftl_dev *dev = ioch->dev;
-	uint32_t i, num_io_channels __attribute__((unused));
+	uint32_t num_io_channels __attribute__((unused));
 
 	assert(ioch->index < dev->conf.max_io_channels);
 	assert(dev->ioch_array[ioch->index] == ioch);
@@ -1176,15 +1096,7 @@ ftl_io_channel_unregister(void *ctx)
 	num_io_channels = __atomic_fetch_sub(&dev->num_io_channels, 1, __ATOMIC_SEQ_CST);
 	assert(num_io_channels > 0);
 
-	for (i = 0; i < ioch->num_entries; ++i) {
-		pthread_spin_destroy(&ioch->wbuf_entries[i].lock);
-	}
-
 	spdk_mempool_free(ioch->io_pool);
-	spdk_ring_free(ioch->free_queue);
-	spdk_ring_free(ioch->submit_queue);
-	spdk_free(ioch->wbuf_payload);
-	free(ioch->wbuf_entries);
 	free(ioch);
 }
 
@@ -1193,21 +1105,9 @@ _ftl_io_channel_destroy_cb(void *ctx)
 {
 	struct ftl_io_channel *ioch = ctx;
 	struct spdk_ftl_dev *dev = ioch->dev;
-	uint32_t i;
 
 	SPDK_NOTICELOG("FTL IO channel destroy on %s\n",
 		       spdk_thread_get_name(spdk_get_thread()));
-
-	/* Do not destroy the channel if some of its entries are still in use */
-	if (spdk_ring_count(ioch->free_queue) != ioch->num_entries) {
-		spdk_thread_send_msg(spdk_get_thread(), _ftl_io_channel_destroy_cb, ctx);
-		return;
-	}
-
-	/* Evict all valid entries from cache */
-	for (i = 0; i < ioch->num_entries; ++i) {
-		ftl_evict_cache_entry(dev, &ioch->wbuf_entries[i]);
-	}
 
 	spdk_poller_unregister(&ioch->poller);
 	spdk_thread_send_msg(ftl_get_core_thread(dev), ftl_io_channel_unregister, ioch);
@@ -1228,9 +1128,6 @@ ftl_io_channel_destroy_cb(void *io_device, void *ctx)
 static int
 ftl_dev_init_io_channel(struct spdk_ftl_dev *dev)
 {
-	struct ftl_batch *batch;
-	uint32_t i;
-
 	/* Align the IO channels to nearest power of 2 to allow for easy addr bit shift */
 	dev->conf.max_io_channels = spdk_align32pow2(dev->conf.max_io_channels);
 	dev->ioch_shift = spdk_u32log2(dev->conf.max_io_channels);
@@ -1242,7 +1139,7 @@ ftl_dev_init_io_channel(struct spdk_ftl_dev *dev)
 	}
 
 	if (dev->md_size > 0) {
-		dev->md_buf = spdk_zmalloc(dev->md_size * dev->xfer_size * FTL_BATCH_COUNT,
+		dev->md_buf = spdk_zmalloc(dev->md_size * dev->xfer_size * dev->conf.user_io_pool_size,
 					   dev->md_size, NULL, SPDK_ENV_LCORE_ID_ANY,
 					   SPDK_MALLOC_DMA);
 		if (dev->md_buf == NULL) {
@@ -1251,31 +1148,10 @@ ftl_dev_init_io_channel(struct spdk_ftl_dev *dev)
 		}
 	}
 
-	dev->iov_buf = calloc(FTL_BATCH_COUNT, dev->xfer_size * sizeof(struct iovec));
-	if (!dev->iov_buf) {
-		SPDK_ERRLOG("Failed to allocate iovec buffer\n");
-		return -1;
-	}
-
-	TAILQ_INIT(&dev->free_batches);
-	TAILQ_INIT(&dev->pending_batches);
 	TAILQ_INIT(&dev->ioch_queue);
 
 	ftl_writer_init(dev, &dev->writer_user, SPDK_FTL_LIMIT_HIGH);
 	ftl_writer_init(dev, &dev->writer_gc, SPDK_FTL_LIMIT_CRIT);
-
-	for (i = 0; i < FTL_BATCH_COUNT; ++i) {
-		batch = &dev->batch_array[i];
-		batch->iov = &dev->iov_buf[i * dev->xfer_size];
-		batch->num_entries = 0;
-		batch->index = i;
-		TAILQ_INIT(&batch->entries);
-		if (dev->md_buf != NULL) {
-			batch->metadata = (char *)dev->md_buf + i * dev->xfer_size * dev->md_size;
-		}
-
-		TAILQ_INSERT_TAIL(&dev->free_batches, batch, tailq);
-	}
 
 	dev->num_io_channels = 0;
 
@@ -1434,7 +1310,6 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 	pthread_mutex_unlock(&g_ftl_queue_lock);
 
 	assert(LIST_EMPTY(&dev->wptr_list));
-	assert(dev->current_batch == NULL);
 
 	ftl_dev_dump_bands(dev);
 	ftl_dev_dump_stats(dev);
@@ -1466,7 +1341,6 @@ ftl_dev_free_sync(struct spdk_ftl_dev *dev)
 	spdk_free(dev->md_buf);
 	assert(dev->num_io_channels == 0);
 	free(dev->ioch_array);
-	free(dev->iov_buf);
 	free(dev->name);
 	free(dev->bands);
 	if (dev->l2p_pmem_len != 0) {

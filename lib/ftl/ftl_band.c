@@ -137,6 +137,9 @@ ftl_band_write_failed(struct ftl_band *band)
 {
 	struct spdk_ftl_dev *dev = band->dev;
 
+	/* TODO(mbarczak) Need to handle it due to reloc implementation */
+	abort();
+
 	band->high_prio = 1;
 
 	ftl_reloc_add(dev->reloc, band, 0, ftl_get_num_blocks_in_band(dev), 1, true);

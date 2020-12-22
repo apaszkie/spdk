@@ -168,8 +168,6 @@ _bdev_ftl_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_i
 				      bdev_io->u.bdev.iovcnt, bdev_ftl_cb, bdev_io);
 
 	case SPDK_BDEV_IO_TYPE_FLUSH:
-		return spdk_ftl_flush(ftl_bdev->dev, bdev_ftl_cb, bdev_io);
-
 	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
 	case SPDK_BDEV_IO_TYPE_RESET:
 	case SPDK_BDEV_IO_TYPE_UNMAP:

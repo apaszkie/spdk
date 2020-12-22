@@ -286,38 +286,6 @@ ftl_io_init_internal(const struct ftl_io_init_opts *opts)
 }
 
 struct ftl_io *
-ftl_io_wbuf_init(struct spdk_ftl_dev *dev, struct ftl_addr addr, struct ftl_band *band,
-		 struct ftl_batch *batch, ftl_io_fn cb)
-{
-	struct ftl_io *io;
-	struct ftl_io_init_opts opts = {
-		.dev		= dev,
-		.io		= NULL,
-		.batch		= batch,
-		.band		= band,
-		.size		= sizeof(struct ftl_io),
-		.flags		= 0,
-		.type		= FTL_IO_WRITE,
-		.num_blocks	= dev->xfer_size,
-		.cb_fn		= cb,
-		.iovcnt		= dev->xfer_size,
-		.md		= batch->metadata,
-		.ioch		= ftl_get_io_channel(dev),
-	};
-
-	memcpy(opts.iovs, batch->iov, sizeof(struct iovec) * dev->xfer_size);
-
-	io = ftl_io_init_internal(&opts);
-	if (!io) {
-		return NULL;
-	}
-
-	io->addr = addr;
-
-	return io;
-}
-
-struct ftl_io *
 ftl_io_erase_init(struct ftl_band *band, size_t num_blocks, ftl_io_fn cb)
 {
 	struct ftl_io *io;

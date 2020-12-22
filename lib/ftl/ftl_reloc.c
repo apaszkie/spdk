@@ -769,55 +769,6 @@ ftl_band_reloc_free(struct ftl_band_reloc *breloc)
 static void
 ftl_reloc_process_move_completions(struct ftl_reloc *reloc)
 {
-	struct ftl_reloc_move *moves[FTL_RELOC_MAX_MOVES] = {0};
-	struct ftl_reloc_move *move;
-	struct ftl_band_reloc *breloc;
-	struct ftl_band *dest_band;
-	struct ftl_addr addr;
-	size_t i, j, num_outstanding, chunk_off, pos;
-	struct ftl_wbuf_entry entry = { 0 };
-	struct spdk_ftl_dev *dev = reloc->dev;
-
-	if (spdk_ring_count(reloc->move_cmpl_queue) == 0) {
-		return;
-	}
-
-	num_outstanding = spdk_ring_dequeue(reloc->move_cmpl_queue, (void **)moves, reloc->max_qdepth);
-
-	for (i = 0; i < num_outstanding; ++i) {
-		move = moves[i];
-		breloc = move->breloc;
-		pos = 0;
-
-		for (chunk_off = 0; chunk_off < move->num_chunks; ++chunk_off) {
-			addr = move->chunk_vector[chunk_off].addr;
-			for (j = 0; j < move->chunk_vector[chunk_off].num_blocks; ++j) {
-				size_t block_off;
-				block_off = ftl_band_block_offset_from_addr(breloc->band, addr);
-				ftl_reloc_clr_block(breloc, block_off);
-				entry.addr = addr;
-				entry.lba = move->lba_vector[pos];
-				entry.io_flags = FTL_IO_WEAK;
-
-				if (entry.lba != FTL_LBA_INVALID) {
-					dest_band = ftl_band_from_addr(dev, move->dest_addr);
-					assert(dest_band != breloc->band);
-
-					ftl_update_l2p(reloc->dev, entry.lba, move->dest_addr, addr);
-				}
-
-				move->dest_addr.offset++;
-				addr.offset++;
-				pos++;
-			}
-		}
-
-		dev->reloc_outstanding--;
-		breloc->num_outstanding--;
-		move->num_blocks = 0;
-		move->num_chunks = 0;
-		STAILQ_INSERT_HEAD(&reloc->free_move_queue, move, entry);
-	}
 }
 
 static int
