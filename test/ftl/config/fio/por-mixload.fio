@@ -1,0 +1,33 @@
+[global]
+ioengine=spdk_bdev
+spdk_json_conf=${FTL_JSON_CONF}
+filename=${FTL_BDEV_NAME}
+# SPDK cores, FTL core mask should avoid core 0
+spdk_core_mask=${SPDK_CORE_MASK}
+# CPUS allowed fio threads cannot interleave with SPDK cores
+cpus_allowed=12-15
+cpus_allowed_policy=split
+direct=1
+thread=1
+buffered=0
+time_based
+norandommap=1
+randrepeat=0
+scramble_buffers=1
+group_reporting
+random_distribution=random
+numjobs=1
+
+[job1]
+bs=4k
+rw=randread
+iodepth=62
+runtime=3600s
+
+[job2]
+bs=128k
+rw=rw
+rwmixread=33
+iodepth=66
+runtime=3600s
+
