@@ -986,7 +986,7 @@ ftl_task_core(void *ctx)
 	ftl_reloc(dev->reloc);
 	ftl_nv_cache_compact(dev);
 
-	return 0;
+	return SPDK_POLLER_BUSY;
 }
 
 struct ftl_band *ftl_band_get_next_free(struct spdk_ftl_dev *dev)
