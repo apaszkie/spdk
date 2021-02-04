@@ -157,6 +157,10 @@ uint16_t g_data_win_size, g_max_data_rows;
 uint32_t g_last_threads_count, g_last_pollers_count, g_last_cores_count;
 uint8_t g_current_sort_col[NUMBER_OF_TABS] = {0, 0, 0};
 bool g_interval_data = true;
+
+//if enable reactor core tab
+static bool g_b_enable_reactor_core = true;
+
 static struct col_desc g_col_desc[NUMBER_OF_TABS][TABS_COL_COUNT] = {
 	{	{.name = "Thread name", .max_data_string = MAX_THREAD_NAME_LEN},
 		{.name = "Core", .max_data_string = MAX_CORE_STR_LEN},
@@ -585,26 +589,31 @@ get_data(void)
 		goto end;
 	}
 
-	spdk_jsonrpc_client_free_response(json_resp);
+	//
+	//if reactor core tab is disabled, does not get data from framework_get_reactors
+	//
+	if (g_b_enable_reactor_core) {
+		spdk_jsonrpc_client_free_response(json_resp);//free poller stats here.
 
-	rc = rpc_send_req("framework_get_reactors", &json_resp);
-	if (rc) {
-		goto end;
-	}
+		rc = rpc_send_req("framework_get_reactors", &json_resp);
+		if (rc) {
+			goto end;
+		}
 
-	/* Decode json */
-	memset(&g_cores_stats, 0, sizeof(g_cores_stats));
-	if (spdk_json_decode_object(json_resp->result, rpc_cores_stats_decoders,
-				    SPDK_COUNTOF(rpc_cores_stats_decoders), &g_cores_stats)) {
-		rc = -EINVAL;
-		goto end;
-	}
+		/* Decode json */
+		memset(&g_cores_stats, 0, sizeof(g_cores_stats));
+		if (spdk_json_decode_object(json_resp->result, rpc_cores_stats_decoders,
+			SPDK_COUNTOF(rpc_cores_stats_decoders), &g_cores_stats)) {
+			rc = -EINVAL;
+			goto end;
+		}
 
-	for (i = 0; i < g_cores_stats.cores.cores_count; i++) {
-		core_info = &g_cores_stats.cores.core[i];
+		for (i = 0; i < g_cores_stats.cores.cores_count; i++) {
+			core_info = &g_cores_stats.cores.core[i];
 
-		for (j = 0; j < core_info->threads.threads_count; j++) {
-			g_thread_info[core_info->threads.thread[j].id]->core_num = core_info->lcore;
+			for (j = 0; j < core_info->threads.threads_count; j++) {
+				g_thread_info[core_info->threads.thread[j].id]->core_num = core_info->lcore;
+			}
 		}
 	}
 
@@ -789,8 +798,11 @@ static void
 get_time_str(uint64_t ticks, char *time_str)
 {
 	uint64_t time;
+	if(g_b_enable_reactor_core)
+		time = ticks * SPDK_SEC_TO_USEC / g_cores_stats.tick_rate;
+	else
+		time = ticks * SPDK_SEC_TO_USEC / g_pollers_stats.tick_rate;
 
-	time = ticks * SPDK_SEC_TO_USEC / g_cores_stats.tick_rate;
 	snprintf(time_str, MAX_TIME_STR_LEN, "%" PRIu64, time);
 }
 
@@ -1341,6 +1353,12 @@ store_core_stats(uint32_t core, uint64_t threads, uint64_t pollers, uint64_t idl
 }
 
 static uint8_t
+refresh_cores_tab_mock(uint8_t current_page)
+{
+	return 0;
+}
+
+static uint8_t
 refresh_cores_tab(uint8_t current_page)
 {
 	struct col_desc *col_desc = g_col_desc[CORES_TAB];
@@ -1455,7 +1473,10 @@ refresh_cores_tab(uint8_t current_page)
 static uint8_t
 refresh_tab(enum tabs tab, uint8_t current_page)
 {
-	uint8_t (*refresh_function[NUMBER_OF_TABS])(uint8_t current_page) = {refresh_threads_tab, refresh_pollers_tab, refresh_cores_tab};
+	uint8_t (*refresh_function[NUMBER_OF_TABS])(uint8_t current_page) = { refresh_threads_tab, refresh_pollers_tab, refresh_cores_tab };
+	if(!g_b_enable_reactor_core)
+		 refresh_function[CORES_TAB] = refresh_cores_tab_mock;
+
 	int color_pair[NUMBER_OF_TABS] = {COLOR_PAIR(2), COLOR_PAIR(2), COLOR_PAIR(2)};
 	int i;
 	uint8_t max_pages = 0;
@@ -2345,7 +2366,10 @@ show_stats(void)
 			if (active_tab == THREADS_TAB) {
 				show_thread(current_page);
 			} else if (active_tab == CORES_TAB) {
-				show_core(current_page);
+				// if disable reactor core does not process it
+				if (g_b_enable_reactor_core)
+					show_core(current_page);
+					
 			} else if (active_tab == POLLERS_TAB) {
 				show_poller(current_page);
 			}
@@ -2457,6 +2481,7 @@ usage(const char *program_name)
 	printf("\n");
 	printf("options:\n");
 	printf(" -r <path>  RPC listen address (default: /var/tmp/spdk.sock\n");
+	printf(" -f   disable reactor core tab for fio plugin rpc\n");
 	printf(" -h         show this usage\n");
 }
 
@@ -2465,10 +2490,14 @@ int main(int argc, char **argv)
 	int op;
 	char *socket = SPDK_DEFAULT_RPC_ADDR;
 
-	while ((op = getopt(argc, argv, "r:h")) != -1) {
+	while ((op = getopt(argc, argv, "r:f:h")) != -1) {
 		switch (op) {
 		case 'r':
 			socket = optarg;
+			break;
+		case 'f':
+			g_b_enable_reactor_core = false;
+			printf("disabled reactor core tab for fio plugin rpc\n");
 			break;
 		case 'H':
 		default:
