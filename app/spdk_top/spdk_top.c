@@ -81,12 +81,26 @@
 #define MAX_POLLER_NAME_LEN 36
 #define MAX_POLLER_COUNT_STR_LEN 16
 #define MAX_POLLER_TYPE_STR_LEN 8
+#define MAX_POLLER_IND_STR_LEN 8
 #define MAX_CORE_MASK_STR_LEN 16
 #define MAX_CORE_STR_LEN 6
-#define MAX_TIME_STR_LEN 10
+#define MAX_TIME_STR_LEN 12
+#define MAX_POLLER_RUN_COUNT 20
 #define MAX_PERIOD_STR_LEN 12
 #define WINDOW_HEADER 12
 #define FROM_HEX 16
+#define THREAD_WIN_WIDTH 69
+#define THREAD_WIN_HEIGHT 9
+#define THREAD_WIN_HOR_POS 75
+#define THREAD_WIN_FIRST_COL 2
+#define CORE_WIN_FIRST_COL 16
+#define CORE_WIN_WIDTH 48
+#define CORE_WIN_HEIGHT 9
+#define CORE_WIN_HOR_POS 60
+#define POLLER_WIN_HEIGHT 8
+#define POLLER_WIN_WIDTH 64
+#define POLLER_WIN_FIRST_COL 14
+#define POLLER_WIN_HOR_POS 59
 
 enum tabs {
 	THREADS_TAB,
@@ -118,7 +132,6 @@ struct run_counter_history {
 
 struct core_info {
 	uint32_t core;
-	char core_mask[MAX_CORE_MASK_STR_LEN];
 	uint64_t threads_count;
 	uint64_t pollers_count;
 	uint64_t idle;
@@ -128,6 +141,8 @@ struct core_info {
 };
 
 uint8_t g_sleep_time = 1;
+uint16_t g_selected_row;
+uint16_t g_max_selected_row;
 struct rpc_thread_info *g_thread_info[MAX_THREADS];
 const char *poller_type_str[SPDK_POLLER_TYPES_COUNT] = {"Active", "Timed", "Paused"};
 const char *g_tab_title[NUMBER_OF_TABS] = {"[1] THREADS", "[2] POLLERS", "[3] CORES"};
@@ -141,6 +156,7 @@ uint16_t g_max_row, g_max_col;
 uint16_t g_data_win_size, g_max_data_rows;
 uint32_t g_last_threads_count, g_last_pollers_count, g_last_cores_count;
 uint8_t g_current_sort_col[NUMBER_OF_TABS] = {0, 0, 0};
+bool g_interval_data = true;
 static struct col_desc g_col_desc[NUMBER_OF_TABS][TABS_COL_COUNT] = {
 	{	{.name = "Thread name", .max_data_string = MAX_THREAD_NAME_LEN},
 		{.name = "Core", .max_data_string = MAX_CORE_STR_LEN},
@@ -154,8 +170,9 @@ static struct col_desc g_col_desc[NUMBER_OF_TABS][TABS_COL_COUNT] = {
 	{	{.name = "Poller name", .max_data_string = MAX_POLLER_NAME_LEN},
 		{.name = "Type", .max_data_string = MAX_POLLER_TYPE_STR_LEN},
 		{.name = "On thread", .max_data_string = MAX_THREAD_NAME_LEN},
-		{.name = "Run count", .max_data_string = MAX_TIME_STR_LEN},
+		{.name = "Run count", .max_data_string = MAX_POLLER_RUN_COUNT},
 		{.name = "Period [us]", .max_data_string = MAX_PERIOD_STR_LEN},
+		{.name = "Status", .max_data_string = MAX_POLLER_IND_STR_LEN},
 		{.name = (char *)NULL}
 	},
 	{	{.name = "Core", .max_data_string = MAX_CORE_STR_LEN},
@@ -257,6 +274,8 @@ struct rpc_cores_stats {
 struct rpc_threads_stats g_threads_stats;
 struct rpc_pollers_stats g_pollers_stats;
 struct rpc_cores_stats g_cores_stats;
+struct rpc_poller_info g_pollers_history[RPC_MAX_POLLERS];
+struct rpc_thread_info g_thread_history[RPC_MAX_THREADS];
 
 static void
 init_str_len(void)
@@ -661,14 +680,13 @@ print_max_len(WINDOW *win, int row, uint16_t col, uint16_t max_len, enum str_ali
 	wrefresh(win);
 }
 
-
 static void
 draw_menu_win(void)
 {
 	wbkgd(g_menu_win, COLOR_PAIR(2));
 	box(g_menu_win, 0, 0);
 	print_max_len(g_menu_win, 1, 1, 0, ALIGN_LEFT,
-		      "   [q] Quit   |   [1-3] TAB selection   |   [PgUp] Previous page   |   [PgDown] Next page   |   [c] Columns   |   [s] Sorting  |  [r]  Refresh rate");
+		      "  [q] Quit  |  [1-3] TAB selection  |  [PgUp] Previous page  |  [PgDown] Next page  |  [c] Columns  |  [s] Sorting  |  [r] Refresh rate  |  [Enter] Item details  |  [t] Total/Interval");
 }
 
 static void
@@ -823,12 +841,25 @@ sort_threads(const void *p1, const void *p2)
 	}
 }
 
+static void
+draw_row_background(uint8_t item_index, uint8_t tab)
+{
+	int k;
+
+	if (item_index == g_selected_row) {
+		wattron(g_tabs[tab], COLOR_PAIR(2));
+	}
+	for (k = 1; k < g_max_col - 1; k++) {
+		mvwprintw(g_tabs[tab], TABS_DATA_START_ROW + item_index, k, " ");
+	}
+}
+
 static uint8_t
 refresh_threads_tab(uint8_t current_page)
 {
 	struct col_desc *col_desc = g_col_desc[THREADS_TAB];
 	uint64_t i, threads_count;
-	uint16_t j;
+	uint16_t j, k;
 	uint16_t col;
 	uint8_t max_pages, item_index;
 	static uint8_t last_page = 0;
@@ -868,12 +899,19 @@ refresh_threads_tab(uint8_t current_page)
 
 	qsort(thread_info, threads_count, sizeof(thread_info[0]), sort_threads);
 
+	for (k = 0; k < threads_count; k++) {
+		g_thread_history[thread_info[k]->id].busy = thread_info[k]->busy - thread_info[k]->last_busy;
+		g_thread_history[thread_info[k]->id].idle = thread_info[k]->idle - thread_info[k]->last_idle;
+	}
+
 	for (i = current_page * g_max_data_rows;
 	     i < spdk_min(threads_count, (uint64_t)((current_page + 1) * g_max_data_rows));
 	     i++) {
 		item_index = i - (current_page * g_max_data_rows);
 
 		col = TABS_DATA_START_COL;
+
+		draw_row_background(item_index, THREADS_TAB);
 
 		if (!col_desc[0].disabled) {
 			print_max_len(g_tabs[THREADS_TAB], TABS_DATA_START_ROW + item_index, col,
@@ -909,21 +947,40 @@ refresh_threads_tab(uint8_t current_page)
 			col += col_desc[4].max_data_string + 2;
 		}
 
+		g_thread_history[thread_info[i]->id].idle = thread_info[i]->idle - thread_info[i]->last_idle;
 		if (!col_desc[5].disabled) {
-			get_time_str(thread_info[i]->idle - thread_info[i]->last_idle, idle_time);
+			if (g_interval_data == true) {
+				get_time_str(thread_info[i]->idle - thread_info[i]->last_idle, idle_time);
+			} else {
+				get_time_str(thread_info[i]->idle, idle_time);
+			}
 			print_max_len(g_tabs[THREADS_TAB], TABS_DATA_START_ROW + item_index, col,
 				      col_desc[5].max_data_string, ALIGN_RIGHT, idle_time);
 			col += col_desc[5].max_data_string;
-			thread_info[i]->last_idle = thread_info[i]->idle;
 		}
 
+		g_thread_history[thread_info[i]->id].busy = thread_info[i]->busy - thread_info[i]->last_busy;
 		if (!col_desc[6].disabled) {
-			get_time_str(thread_info[i]->busy - thread_info[i]->last_busy, busy_time);
+			if (g_interval_data == true) {
+				get_time_str(thread_info[i]->busy - thread_info[i]->last_busy, busy_time);
+			} else {
+				get_time_str(thread_info[i]->busy, busy_time);
+			}
 			print_max_len(g_tabs[THREADS_TAB], TABS_DATA_START_ROW + item_index, col,
 				      col_desc[6].max_data_string, ALIGN_RIGHT, busy_time);
-			thread_info[i]->last_busy = thread_info[i]->busy;
+		}
+
+		if (item_index == g_selected_row) {
+			wattroff(g_tabs[THREADS_TAB], COLOR_PAIR(2));
 		}
 	}
+
+	for (k = 0; k < threads_count; k++) {
+		thread_info[k]->last_idle = thread_info[k]->idle;
+		thread_info[k]->last_busy = thread_info[k]->busy;
+	}
+
+	g_max_selected_row = i - current_page * g_max_data_rows - 1;
 
 	return max_pages;
 }
@@ -1048,40 +1105,65 @@ copy_pollers(struct rpc_pollers *pollers, uint64_t pollers_count, enum spdk_poll
 	}
 }
 
-static uint8_t
-refresh_pollers_tab(uint8_t current_page)
+static void
+store_pollers_last_stats(uint64_t poller, uint64_t run_counter, uint64_t period_ticks_counter)
 {
-	struct col_desc *col_desc = g_col_desc[POLLERS_TAB];
+	g_pollers_history[poller].run_count = run_counter;
+	g_pollers_history[poller].period_ticks = period_ticks_counter;
+}
+
+static uint8_t
+prepare_poller_data(uint8_t current_page, struct rpc_poller_info **pollers,
+		    uint64_t *count, uint8_t last_page)
+{
 	struct rpc_poller_thread_info *thread;
-	uint64_t *last_run_counter;
-	uint64_t i, count = 0;
-	uint16_t col, j;
-	uint8_t max_pages, item_index;
-	/* Init g_last_page with value != 0 to force store_last_run_counter() call in copy_pollers()
-	 * so that initial values for run_counter are stored in g_run_counter_history */
-	static uint8_t g_last_page = 0xF;
-	enum sort_type sorting;
-	char run_count[MAX_TIME_STR_LEN], period_ticks[MAX_PERIOD_STR_LEN];
-	struct rpc_poller_info *pollers[RPC_MAX_POLLERS];
+	uint64_t i;
 	bool reset_last_counter = false;
+	enum sort_type sorting;
 
 	for (i = 0; i < g_pollers_stats.pollers_threads.threads_count; i++) {
 		thread = &g_pollers_stats.pollers_threads.threads[i];
-		if (g_last_page != current_page) {
+		if (last_page != current_page) {
 			reset_last_counter = true;
 		}
 
 		copy_pollers(&thread->active_pollers, thread->active_pollers.pollers_count, SPDK_ACTIVE_POLLER,
-			     thread, &count, reset_last_counter, pollers);
+			     thread, count, reset_last_counter, pollers);
 		copy_pollers(&thread->timed_pollers, thread->timed_pollers.pollers_count, SPDK_TIMED_POLLER, thread,
-			     &count, reset_last_counter, pollers);
+			     count, reset_last_counter, pollers);
 		copy_pollers(&thread->paused_pollers, thread->paused_pollers.pollers_count, SPDK_PAUSED_POLLER,
-			     thread, &count, reset_last_counter, pollers);
+			     thread, count, reset_last_counter, pollers);
 	}
 
-	if (g_last_page != current_page) {
-		g_last_page = current_page;
+	if (last_page != current_page) {
+		last_page = current_page;
 	}
+
+	/* Timed pollers can switch their possition on a list because of how they work.
+	 * Let's sort them by name first so that they won't switch on data refresh */
+	sorting = BY_NAME;
+	qsort_r(pollers, *count, sizeof(pollers[0]), sort_pollers, (void *)&sorting);
+	sorting = USE_GLOBAL;
+	qsort_r(pollers, *count, sizeof(pollers[0]), sort_pollers, (void *)&sorting);
+
+	return last_page;
+}
+
+static uint8_t
+refresh_pollers_tab(uint8_t current_page)
+{
+	struct col_desc *col_desc = g_col_desc[POLLERS_TAB];
+	uint64_t *last_run_counter;
+	uint64_t i, count = 0;
+	uint16_t col, j;
+	uint8_t max_pages, item_index;
+	static uint8_t g_last_page = 0xF;
+	/* Init g_last_page with value != 0 to force store_last_run_counter() call in copy_pollers()
+	 * so that initial values for run_counter are stored in g_run_counter_history */
+	char run_count[MAX_TIME_STR_LEN], period_ticks[MAX_PERIOD_STR_LEN];
+	struct rpc_poller_info *pollers[RPC_MAX_POLLERS];
+
+	g_last_page = prepare_poller_data(current_page, pollers, &count, g_last_page);
 
 	max_pages = (count + g_max_data_rows - 1) / g_max_data_rows;
 
@@ -1102,13 +1184,6 @@ refresh_pollers_tab(uint8_t current_page)
 		return max_pages;
 	}
 
-	/* Timed pollers can switch their possition on a list because of how they work.
-	 * Let's sort them by name first so that they won't switch on data refresh */
-	sorting = BY_NAME;
-	qsort_r(pollers, count, sizeof(pollers[0]), sort_pollers, (void *)&sorting);
-	sorting = USE_GLOBAL;
-	qsort_r(pollers, count, sizeof(pollers[0]), sort_pollers, (void *)&sorting);
-
 	/* Display info */
 	for (i = current_page * g_max_data_rows;
 	     i < spdk_min(count, (uint64_t)((current_page + 1) * g_max_data_rows));
@@ -1116,6 +1191,11 @@ refresh_pollers_tab(uint8_t current_page)
 		item_index = i - (current_page * g_max_data_rows);
 
 		col = TABS_DATA_START_COL;
+
+		draw_row_background(item_index, POLLERS_TAB);
+
+		last_run_counter = get_last_run_counter(pollers[i]->name, pollers[i]->thread_id);
+		assert(last_run_counter != NULL);
 
 		if (!col_desc[0].disabled) {
 			print_max_len(g_tabs[POLLERS_TAB], TABS_DATA_START_ROW + item_index, col + 1,
@@ -1135,16 +1215,16 @@ refresh_pollers_tab(uint8_t current_page)
 			col += col_desc[2].max_data_string + 1;
 		}
 
+		store_pollers_last_stats(i, pollers[i]->run_count - *last_run_counter, pollers[i]->period_ticks);
 		if (!col_desc[3].disabled) {
-			last_run_counter = get_last_run_counter(pollers[i]->name, pollers[i]->thread_id);
-			assert(last_run_counter != NULL);
-
-			snprintf(run_count, MAX_TIME_STR_LEN, "%" PRIu64, pollers[i]->run_count - *last_run_counter);
+			if (g_interval_data == true) {
+				snprintf(run_count, MAX_TIME_STR_LEN, "%" PRIu64, pollers[i]->run_count - *last_run_counter);
+			} else {
+				snprintf(run_count, MAX_TIME_STR_LEN, "%" PRIu64, pollers[i]->run_count);
+			}
 			print_max_len(g_tabs[POLLERS_TAB], TABS_DATA_START_ROW + item_index, col,
 				      col_desc[3].max_data_string, ALIGN_RIGHT, run_count);
 			col += col_desc[3].max_data_string;
-
-			store_last_run_counter(pollers[i]->name, pollers[i]->thread_id, pollers[i]->run_count);
 		}
 
 		if (!col_desc[4].disabled) {
@@ -1153,8 +1233,45 @@ refresh_pollers_tab(uint8_t current_page)
 				print_max_len(g_tabs[POLLERS_TAB], TABS_DATA_START_ROW + item_index, col,
 					      col_desc[4].max_data_string, ALIGN_RIGHT, period_ticks);
 			}
+			col += col_desc[3].max_data_string + 4;
+		}
+
+		store_last_run_counter(pollers[i]->name, pollers[i]->thread_id, pollers[i]->run_count);
+
+		if (!col_desc[5].disabled) {
+			if (pollers[i]->busy_count > 0) {
+				if (item_index != g_selected_row) {
+					wattron(g_tabs[POLLERS_TAB], COLOR_PAIR(6));
+					print_max_len(g_tabs[POLLERS_TAB], TABS_DATA_START_ROW + item_index, col,
+						      col_desc[5].max_data_string, ALIGN_RIGHT, "Busy");
+					wattroff(g_tabs[POLLERS_TAB], COLOR_PAIR(6));
+				} else {
+					wattron(g_tabs[POLLERS_TAB], COLOR_PAIR(8));
+					print_max_len(g_tabs[POLLERS_TAB], TABS_DATA_START_ROW + item_index, col,
+						      col_desc[5].max_data_string, ALIGN_RIGHT, "Busy");
+					wattroff(g_tabs[POLLERS_TAB], COLOR_PAIR(8));
+				}
+			} else {
+				if (item_index != g_selected_row) {
+					wattron(g_tabs[POLLERS_TAB], COLOR_PAIR(7));
+					print_max_len(g_tabs[POLLERS_TAB], TABS_DATA_START_ROW + item_index, col,
+						      col_desc[5].max_data_string, ALIGN_RIGHT, "Idle");
+					wattroff(g_tabs[POLLERS_TAB], COLOR_PAIR(7));
+				} else {
+					wattron(g_tabs[POLLERS_TAB], COLOR_PAIR(9));
+					print_max_len(g_tabs[POLLERS_TAB], TABS_DATA_START_ROW + item_index, col,
+						      col_desc[5].max_data_string, ALIGN_RIGHT, "Idle");
+					wattroff(g_tabs[POLLERS_TAB], COLOR_PAIR(9));
+				}
+			}
+		}
+
+		if (item_index == g_selected_row) {
+			wattroff(g_tabs[POLLERS_TAB], COLOR_PAIR(2));
 		}
 	}
+
+	g_max_selected_row = i - current_page * g_max_data_rows - 1;
 
 	return max_pages;
 }
@@ -1214,69 +1331,47 @@ get_core_last_stats(uint32_t core, uint64_t *idle, uint64_t *busy)
 	*busy = g_cores_history[core].last_busy;
 }
 
+static void
+store_core_stats(uint32_t core, uint64_t threads, uint64_t pollers, uint64_t idle, uint64_t busy)
+{
+	g_cores_history[core].threads_count = threads;
+	g_cores_history[core].pollers_count = pollers;
+	g_cores_history[core].idle = idle;
+	g_cores_history[core].busy = busy;
+}
+
 static uint8_t
 refresh_cores_tab(uint8_t current_page)
 {
 	struct col_desc *col_desc = g_col_desc[CORES_TAB];
-	uint64_t i, j;
+	uint64_t i;
+	uint32_t core_num;
 	uint16_t offset, count = 0;
 	uint8_t max_pages, item_index;
 	static uint8_t last_page = 0;
 	char core[MAX_CORE_STR_LEN], threads_number[MAX_THREAD_COUNT_STR_LEN],
 	     pollers_number[MAX_POLLER_COUNT_STR_LEN], idle_time[MAX_TIME_STR_LEN], busy_time[MAX_TIME_STR_LEN];
 	struct core_info cores[RPC_MAX_CORES];
-	struct spdk_cpuset tmp_cpumask = {};
-	bool found = false;
+
+	memset(&cores, 0, sizeof(cores));
 
 	for (i = 0; i < g_threads_stats.threads.threads_count; i++) {
-		if (i == 0) {
-			snprintf(cores[0].core_mask, MAX_CORE_MASK_STR_LEN, "%s",
-				 g_threads_stats.threads.thread_info[0].cpumask);
-			cores[0].threads_count = 1;
-			cores[0].pollers_count = g_threads_stats.threads.thread_info[0].active_pollers_count +
-						 g_threads_stats.threads.thread_info[0].timed_pollers_count +
-						 g_threads_stats.threads.thread_info[0].paused_pollers_count;
-			count++;
-			continue;
-		}
-		for (j = 0; j < count; j++) {
-			if (!strcmp(cores[j].core_mask, g_threads_stats.threads.thread_info[i].cpumask)) {
-				found = true;
-				break;
-			}
-		}
-
-		if (found) {
-			cores[j].threads_count++;
-			cores[j].pollers_count += g_threads_stats.threads.thread_info[i].active_pollers_count +
-						  g_threads_stats.threads.thread_info[i].timed_pollers_count +
-						  g_threads_stats.threads.thread_info[i].paused_pollers_count;
-			found = false;
-		} else {
-			snprintf(cores[count].core_mask, MAX_CORE_MASK_STR_LEN, "%s",
-				 g_threads_stats.threads.thread_info[i].cpumask);
-			cores[count].threads_count = 1;
-			cores[count].pollers_count = g_threads_stats.threads.thread_info[i].active_pollers_count +
-						     g_threads_stats.threads.thread_info[i].timed_pollers_count +
-						     g_threads_stats.threads.thread_info[i].paused_pollers_count;
-			count++;
-		}
+		core_num = g_threads_stats.threads.thread_info[i].core_num;
+		cores[core_num].threads_count++;
+		cores[core_num].pollers_count += g_threads_stats.threads.thread_info[i].active_pollers_count +
+						 g_threads_stats.threads.thread_info[i].timed_pollers_count +
+						 g_threads_stats.threads.thread_info[i].paused_pollers_count;
 	}
 
-	assert(g_cores_stats.cores.cores_count == count);
+	count = g_cores_stats.cores.cores_count;
 
 	for (i = 0; i < count; i++) {
-		for (j = 0; j < count; j++) {
-			spdk_cpuset_zero(&tmp_cpumask);
-			spdk_cpuset_set_cpu(&tmp_cpumask, g_cores_stats.cores.core[j].lcore, true);
-			if (!strcmp(cores[i].core_mask, spdk_cpuset_fmt(&tmp_cpumask))) {
-				cores[i].core = g_cores_stats.cores.core[j].lcore;
-				cores[i].busy = g_cores_stats.cores.core[j].busy;
-				cores[i].idle = g_cores_stats.cores.core[j].idle;
-				if (last_page != current_page) {
-					store_core_last_stats(cores[i].core, cores[i].idle, cores[i].busy);
-				}
-			}
+		core_num = g_cores_stats.cores.core[i].lcore;
+		cores[core_num].core = core_num;
+		cores[core_num].busy = g_cores_stats.cores.core[i].busy;
+		cores[core_num].idle = g_cores_stats.cores.core[i].idle;
+		if (last_page != current_page) {
+			store_core_last_stats(cores[core_num].core, cores[core_num].idle, cores[core_num].busy);
 		}
 	}
 
@@ -1293,14 +1388,18 @@ refresh_cores_tab(uint8_t current_page)
 	     i++) {
 		item_index = i - (current_page * g_max_data_rows);
 
-		snprintf(threads_number, MAX_THREAD_COUNT_STR_LEN, "%ld", cores[i].threads_count);
-		snprintf(pollers_number, MAX_POLLER_COUNT_STR_LEN, "%ld", cores[i].pollers_count);
-		get_core_last_stats(cores[i].core, &cores[i].last_idle, &cores[i].last_busy);
+		core_num = g_cores_stats.cores.core[i].lcore;
+
+		snprintf(threads_number, MAX_THREAD_COUNT_STR_LEN, "%ld", cores[core_num].threads_count);
+		snprintf(pollers_number, MAX_POLLER_COUNT_STR_LEN, "%ld", cores[core_num].pollers_count);
+		get_core_last_stats(cores[core_num].core, &cores[core_num].last_idle, &cores[core_num].last_busy);
 
 		offset = 1;
 
+		draw_row_background(item_index, CORES_TAB);
+
 		if (!col_desc[0].disabled) {
-			snprintf(core, MAX_CORE_STR_LEN, "%d", cores[i].core);
+			snprintf(core, MAX_CORE_STR_LEN, "%d", cores[core_num].core);
 			print_max_len(g_tabs[CORES_TAB], TABS_DATA_START_ROW + item_index, offset,
 				      col_desc[0].max_data_string, ALIGN_RIGHT, core);
 			offset += col_desc[0].max_data_string + 2;
@@ -1319,20 +1418,36 @@ refresh_cores_tab(uint8_t current_page)
 		}
 
 		if (!col_desc[3].disabled) {
-			get_time_str(cores[i].idle - cores[i].last_idle, idle_time);
+			if (g_interval_data == true) {
+				get_time_str(cores[core_num].idle - cores[core_num].last_idle, idle_time);
+			} else {
+				get_time_str(cores[core_num].idle, idle_time);
+			}
 			print_max_len(g_tabs[CORES_TAB], TABS_DATA_START_ROW + item_index, offset,
 				      col_desc[3].max_data_string, ALIGN_RIGHT, idle_time);
 			offset += col_desc[3].max_data_string + 2;
 		}
 
 		if (!col_desc[4].disabled) {
-			get_time_str(cores[i].busy - cores[i].last_busy, busy_time);
+			if (g_interval_data == true) {
+				get_time_str(cores[core_num].busy - cores[core_num].last_busy, busy_time);
+			} else {
+				get_time_str(cores[core_num].busy, busy_time);
+			}
 			print_max_len(g_tabs[CORES_TAB], TABS_DATA_START_ROW + item_index, offset,
 				      col_desc[4].max_data_string, ALIGN_RIGHT, busy_time);
 		}
 
-		store_core_last_stats(cores[i].core, cores[i].idle, cores[i].busy);
+		store_core_last_stats(cores[core_num].core, cores[core_num].idle, cores[core_num].busy);
+		store_core_stats(cores[core_num].core, cores[core_num].threads_count, cores[core_num].pollers_count,
+				 cores[core_num].idle - cores[core_num].last_idle, cores[core_num].busy - cores[core_num].last_busy);
+
+		if (item_index == g_selected_row) {
+			wattroff(g_tabs[CORES_TAB], COLOR_PAIR(2));
+		}
 	}
+
+	g_max_selected_row = i - current_page * g_max_data_rows - 1;
 
 	return max_pages;
 }
@@ -1357,6 +1472,7 @@ refresh_tab(enum tabs tab, uint8_t current_page)
 	for (i = 0; i < NUMBER_OF_TABS; i++) {
 		wrefresh(g_tab_win[i]);
 	}
+	draw_menu_win();
 
 	return max_pages;
 }
@@ -1370,6 +1486,15 @@ print_in_middle(WINDOW *win, int starty, int startx, int width, char *string, ch
 	temp = (width - length) / 2;
 	wattron(win, color);
 	mvwprintw(win, starty, startx + temp, "%s", string);
+	wattroff(win, color);
+	refresh();
+}
+
+static void
+print_left(WINDOW *win, int starty, int startx, int width, char *string, chtype color)
+{
+	wattron(win, color);
+	mvwprintw(win, starty, startx, "%s", string);
 	wattroff(win, color);
 	refresh();
 }
@@ -1485,8 +1610,10 @@ filter_columns(uint8_t tab)
 
 	filter_win = newwin(elements + WINDOW_HEADER_LEN, len + WINDOW_BORDER_LEN,
 			    (g_max_row - elements - 1) / 2, (g_max_col - len) / 2);
+	assert(filter_win != NULL);
 	keypad(filter_win, TRUE);
 	filter_panel = new_panel(filter_win);
+	assert(filter_panel != NULL);
 
 	top_panel(filter_panel);
 	update_panels();
@@ -1611,8 +1738,10 @@ change_sorting(uint8_t tab)
 
 	sort_win = newwin(elements + WINDOW_HEADER_LEN, len + WINDOW_BORDER_LEN, (g_max_row - elements) / 2,
 			  (g_max_col - len) / 2);
+	assert(sort_win != NULL);
 	keypad(sort_win, TRUE);
 	sort_panel = new_panel(sort_win);
+	assert(sort_panel != NULL);
 
 	top_panel(sort_panel);
 	update_panels();
@@ -1683,8 +1812,10 @@ change_refresh_rate(void)
 
 	refresh_win = newwin(RR_WIN_HEIGHT, RR_WIN_WIDTH, (g_max_row - RR_WIN_HEIGHT - 1) / 2,
 			     (g_max_col - RR_WIN_WIDTH) / 2);
+	assert(refresh_win != NULL);
 	keypad(refresh_win, TRUE);
 	refresh_panel = new_panel(refresh_win);
+	assert(refresh_panel != NULL);
 
 	top_panel(refresh_panel);
 	update_panels();
@@ -1767,6 +1898,354 @@ free_resources(void)
 }
 
 static void
+display_thread(struct rpc_thread_info *thread_info)
+{
+	PANEL *thread_panel;
+	WINDOW *thread_win;
+	struct rpc_poller_thread_info *thread;
+	struct rpc_pollers *pollers;
+	struct rpc_poller_info *poller;
+	uint64_t pollers_count, current_row, i, j, time;
+	int c;
+	bool stop_loop = false;
+	char idle_time[MAX_TIME_STR_LEN], busy_time[MAX_TIME_STR_LEN], run_count[MAX_POLLER_COUNT_STR_LEN];
+
+	pollers_count = thread_info->active_pollers_count +
+			thread_info->timed_pollers_count +
+			thread_info->paused_pollers_count;
+
+	thread_win = newwin(pollers_count + THREAD_WIN_HEIGHT, THREAD_WIN_WIDTH,
+			    (g_max_row - pollers_count) / 2, (g_max_col - THREAD_WIN_HOR_POS) / 2);
+	keypad(thread_win, TRUE);
+	thread_panel = new_panel(thread_win);
+
+	top_panel(thread_panel);
+	update_panels();
+	doupdate();
+
+	box(thread_win, 0, 0);
+
+	print_in_middle(thread_win, 1, 0, THREAD_WIN_WIDTH, thread_info->name,
+			COLOR_PAIR(3));
+	mvwhline(thread_win, 2, 1, ACS_HLINE, THREAD_WIN_WIDTH - 2);
+	mvwaddch(thread_win, 2, THREAD_WIN_WIDTH, ACS_RTEE);
+
+	print_left(thread_win, 3, THREAD_WIN_FIRST_COL, THREAD_WIN_WIDTH,
+		   "Core:                Idle [us]:            Busy [us]:", COLOR_PAIR(5));
+	mvwprintw(thread_win, 3, THREAD_WIN_FIRST_COL + 6, "%" PRIu64,
+		  thread_info->core_num);
+
+	if (g_interval_data) {
+		get_time_str(g_thread_history[thread_info->id].idle, idle_time);
+		mvwprintw(thread_win, 3, THREAD_WIN_FIRST_COL + 32, idle_time);
+		get_time_str(g_thread_history[thread_info->id].busy, busy_time);
+		mvwprintw(thread_win, 3, THREAD_WIN_FIRST_COL + 54, busy_time);
+	} else {
+		get_time_str(thread_info->idle, idle_time);
+		mvwprintw(thread_win, 3, THREAD_WIN_FIRST_COL + 32, idle_time);
+		get_time_str(thread_info->busy, busy_time);
+		mvwprintw(thread_win, 3, THREAD_WIN_FIRST_COL + 54, busy_time);
+	}
+
+	print_left(thread_win, 4, THREAD_WIN_FIRST_COL, THREAD_WIN_WIDTH,
+		   "Active pollers:      Timed pollers:        Paused pollers:", COLOR_PAIR(5));
+	mvwprintw(thread_win, 4, THREAD_WIN_FIRST_COL + 17, "%" PRIu64,
+		  thread_info->active_pollers_count);
+	mvwprintw(thread_win, 4, THREAD_WIN_FIRST_COL + 36, "%" PRIu64,
+		  thread_info->timed_pollers_count);
+	mvwprintw(thread_win, 4, THREAD_WIN_FIRST_COL + 59, "%" PRIu64,
+		  thread_info->paused_pollers_count);
+
+	mvwhline(thread_win, 5, 1, ACS_HLINE, THREAD_WIN_WIDTH - 2);
+
+	print_in_middle(thread_win, 6, 0, THREAD_WIN_WIDTH,
+			"Pollers                          Type    Total run count   Period", COLOR_PAIR(5));
+
+	mvwhline(thread_win, 7, 1, ACS_HLINE, THREAD_WIN_WIDTH - 2);
+
+	current_row = 8;
+
+	for (i = 0; i < g_pollers_stats.pollers_threads.threads_count; i++) {
+		thread = &g_pollers_stats.pollers_threads.threads[i];
+		if (thread->id == thread_info->id) {
+			pollers = &thread->active_pollers;
+			for (j = 0; j < pollers->pollers_count; j++) {
+				poller = &pollers->pollers[j];
+				mvwprintw(thread_win, current_row, THREAD_WIN_FIRST_COL, "%s", poller->name);
+				mvwprintw(thread_win, current_row, THREAD_WIN_FIRST_COL + 33, "Active");
+				snprintf(run_count, MAX_POLLER_COUNT_STR_LEN, "%" PRIu64, poller->run_count);
+				mvwprintw(thread_win, current_row, THREAD_WIN_FIRST_COL + 41, run_count);
+				current_row++;
+			}
+			pollers = &thread->timed_pollers;
+			for (j = 0; j < pollers->pollers_count; j++) {
+				poller = &pollers->pollers[j];
+				mvwprintw(thread_win, current_row, THREAD_WIN_FIRST_COL, "%s", poller->name);
+				mvwprintw(thread_win, current_row, THREAD_WIN_FIRST_COL + 33, "Timed");
+				mvwprintw(thread_win, current_row, THREAD_WIN_FIRST_COL + 41, "%" PRIu64, poller->run_count);
+				time = poller->period_ticks * SPDK_SEC_TO_USEC / g_cores_stats.tick_rate;
+				mvwprintw(thread_win, current_row, THREAD_WIN_FIRST_COL + 59, "%" PRIu64, time);
+				current_row++;
+			}
+			pollers = &thread->paused_pollers;
+			for (j = 0; j < pollers->pollers_count; j++) {
+				poller = &pollers->pollers[j];
+				mvwprintw(thread_win, current_row, THREAD_WIN_FIRST_COL, "%s", poller->name);
+				mvwprintw(thread_win, current_row, THREAD_WIN_FIRST_COL + 33, "Paused");
+				mvwprintw(thread_win, current_row, THREAD_WIN_FIRST_COL + 41, "%" PRIu64, poller->run_count);
+				current_row++;
+			}
+		}
+	}
+
+	refresh();
+	wrefresh(thread_win);
+
+	while (!stop_loop) {
+		c = wgetch(thread_win);
+
+		switch (c) {
+		case 10: /* ENTER */
+		case 27: /* ESC */
+			stop_loop = true;
+			break;
+		default:
+			break;
+		}
+	}
+
+	del_panel(thread_panel);
+	delwin(thread_win);
+}
+
+static void
+show_thread(uint8_t current_page)
+{
+	struct rpc_thread_info *thread_info[g_threads_stats.threads.threads_count];
+	uint64_t thread_number = current_page * g_max_data_rows + g_selected_row;
+	uint64_t i;
+
+	get_data();
+
+	for (i = 0; i < g_threads_stats.threads.threads_count; i++) {
+		thread_info[i] = &g_threads_stats.threads.thread_info[i];
+	}
+
+	qsort(thread_info, g_threads_stats.threads.threads_count, sizeof(thread_info[0]), sort_threads);
+
+	display_thread(thread_info[thread_number]);
+
+	free_data();
+}
+
+static void
+show_single_thread(uint64_t thread_id)
+{
+	uint64_t i;
+
+	for (i = 0; i < g_threads_stats.threads.threads_count; i++) {
+		if (g_threads_stats.threads.thread_info[i].id == thread_id) {
+			display_thread(&g_threads_stats.threads.thread_info[i]);
+			break;
+		}
+	}
+}
+
+static void
+show_core(uint8_t current_page)
+{
+	PANEL *core_panel;
+	WINDOW *core_win;
+	uint64_t core_number = current_page * g_max_data_rows + g_selected_row;
+	struct rpc_core_info *core_info[g_cores_stats.cores.cores_count];
+	uint64_t threads_count, i, j;
+	uint16_t current_threads_row;
+	int c;
+	char core_win_title[25];
+	bool stop_loop = false;
+	char idle_time[MAX_TIME_STR_LEN], busy_time[MAX_TIME_STR_LEN];
+
+	get_data();
+
+	for (i = 0; i < g_cores_stats.cores.cores_count; i++) {
+		core_info[i] = &g_cores_stats.cores.core[i];
+	}
+
+	threads_count = g_cores_stats.cores.core->threads.threads_count;
+	core_win = newwin(threads_count + CORE_WIN_HEIGHT, CORE_WIN_WIDTH,
+			  (g_max_row - threads_count) / 2, (g_max_col - CORE_WIN_HOR_POS) / 2);
+
+	keypad(core_win, TRUE);
+	core_panel = new_panel(core_win);
+
+	top_panel(core_panel);
+	update_panels();
+	doupdate();
+
+	box(core_win, 0, 0);
+	snprintf(core_win_title, sizeof(core_win_title), "Core %" PRIu64 " details", core_number);
+	print_in_middle(core_win, 1, 0, CORE_WIN_WIDTH, core_win_title, COLOR_PAIR(3));
+
+	mvwaddch(core_win, -1, 0, ACS_LTEE);
+	mvwhline(core_win, 2, 1, ACS_HLINE, CORE_WIN_WIDTH - 2);
+	mvwaddch(core_win, 2, CORE_WIN_WIDTH, ACS_RTEE);
+	print_left(core_win, 3, 1, CORE_WIN_WIDTH, "Thread count:          Idle time:", COLOR_PAIR(5));
+
+	mvwprintw(core_win, 3, CORE_WIN_FIRST_COL, "%" PRIu64,
+		  g_cores_history[core_number].threads_count);
+
+	if (g_interval_data == true) {
+		get_time_str(g_cores_history[core_number].idle, idle_time);
+		get_time_str(g_cores_history[core_number].busy, busy_time);
+	} else {
+		get_time_str(core_info[core_number]->idle, idle_time);
+		get_time_str(core_info[core_number]->busy, busy_time);
+	}
+	mvwprintw(core_win, 3, CORE_WIN_FIRST_COL + 20, idle_time);
+
+	print_left(core_win, 5, 1, CORE_WIN_WIDTH, "Poller count:          Busy time:", COLOR_PAIR(5));
+	mvwprintw(core_win, 5, CORE_WIN_FIRST_COL, "%" PRIu64,
+		  g_cores_history[core_number].pollers_count);
+
+	mvwprintw(core_win, 5, CORE_WIN_FIRST_COL + 20, busy_time);
+
+	mvwhline(core_win, 4, 1, ACS_HLINE, CORE_WIN_WIDTH - 2);
+	mvwhline(core_win, 6, 1, ACS_HLINE, CORE_WIN_WIDTH - 2);
+	print_left(core_win, 7, 1, CORE_WIN_WIDTH, "Threads on this core", COLOR_PAIR(5));
+
+	for (j = 0; j < core_info[core_number]->threads.threads_count; j++) {
+		mvwprintw(core_win, j + 8, 1, core_info[core_number]->threads.thread[j].name);
+	}
+
+	refresh();
+	wrefresh(core_win);
+
+	current_threads_row = 0;
+
+	while (!stop_loop) {
+		for (j = 0; j < core_info[core_number]->threads.threads_count; j++) {
+			if (j != current_threads_row) {
+				mvwprintw(core_win, j + 8, 1, core_info[core_number]->threads.thread[j].name);
+			} else {
+				print_left(core_win, j + 8, 1, CORE_WIN_WIDTH - 2,
+					   core_info[core_number]->threads.thread[j].name, COLOR_PAIR(2));
+			}
+		}
+
+		wrefresh(core_win);
+
+		c = wgetch(core_win);
+		switch (c) {
+		case 10: /* ENTER */
+			show_single_thread(core_info[core_number]->threads.thread[current_threads_row].id);
+			break;
+		case 27: /* ESC */
+			stop_loop = true;
+			break;
+		case KEY_UP:
+			if (current_threads_row != 0) {
+				current_threads_row--;
+			}
+			break;
+		case KEY_DOWN:
+			if (current_threads_row != core_info[core_number]->threads.threads_count - 1) {
+				current_threads_row++;
+			}
+			break;
+		default:
+			break;
+		}
+	}
+
+	del_panel(core_panel);
+	delwin(core_win);
+
+	free_data();
+}
+
+static void
+show_poller(uint8_t current_page)
+{
+	PANEL *poller_panel;
+	WINDOW *poller_win;
+	uint64_t poller_counter = 0, count = 0;
+	uint64_t poller_number = current_page * g_max_data_rows + g_selected_row;
+	struct rpc_poller_info *pollers[RPC_MAX_POLLERS];
+	bool stop_loop = false;
+	char poller_period[MAX_TIME_STR_LEN];
+	int c;
+
+	get_data();
+
+	prepare_poller_data(current_page, pollers, &count, current_page);
+
+	poller_win = newwin(POLLER_WIN_HEIGHT, POLLER_WIN_WIDTH,
+			    (g_max_row - poller_counter) / 2, (g_max_col - POLLER_WIN_HOR_POS) / 2);
+
+	keypad(poller_win, TRUE);
+	poller_panel = new_panel(poller_win);
+
+	top_panel(poller_panel);
+	update_panels();
+	doupdate();
+
+	box(poller_win, 0, 0);
+
+	print_in_middle(poller_win, 1, 0, POLLER_WIN_WIDTH, pollers[poller_number]->name, COLOR_PAIR(3));
+	mvwhline(poller_win, 2, 1, ACS_HLINE, POLLER_WIN_WIDTH - 2);
+	mvwaddch(poller_win, 2, POLLER_WIN_WIDTH, ACS_RTEE);
+
+	print_left(poller_win, 3, 2, POLLER_WIN_WIDTH, "Type:                  On thread:", COLOR_PAIR(5));
+	mvwprintw(poller_win, 3, POLLER_WIN_FIRST_COL,
+		  poller_type_str[pollers[poller_number]->type]);
+	mvwprintw(poller_win, 3, POLLER_WIN_FIRST_COL + 23, pollers[poller_number]->thread_name);
+
+	print_left(poller_win, 4, 2, POLLER_WIN_WIDTH, "Run count:", COLOR_PAIR(5));
+
+	if (g_interval_data) {
+		mvwprintw(poller_win, 4, POLLER_WIN_FIRST_COL, "%" PRIu64,
+			  g_pollers_history[poller_number].run_count);
+	} else {
+		mvwprintw(poller_win, 4, POLLER_WIN_FIRST_COL, "%" PRIu64,
+			  pollers[poller_number]->run_count);
+	}
+
+	if (pollers[poller_number]->period_ticks != 0) {
+		print_left(poller_win, 4, 28, POLLER_WIN_WIDTH, "Period:", COLOR_PAIR(5));
+		get_time_str(g_pollers_history[poller_number].period_ticks, poller_period);
+		mvwprintw(poller_win, 4, POLLER_WIN_FIRST_COL + 23, poller_period);
+	}
+	mvwhline(poller_win, 5, 1, ACS_HLINE, POLLER_WIN_WIDTH - 2);
+	print_in_middle(poller_win, 6, 1, POLLER_WIN_WIDTH - 7, "Status:", COLOR_PAIR(5));
+
+	if (pollers[poller_number]->busy_count > 0) {
+		print_in_middle(poller_win, 6, 1, POLLER_WIN_WIDTH + 6, "Busy", COLOR_PAIR(6));
+	} else {
+		print_in_middle(poller_win, 6, 1, POLLER_WIN_WIDTH + 6, "Idle", COLOR_PAIR(7));
+	}
+
+	refresh();
+	wrefresh(poller_win);
+
+	while (!stop_loop) {
+		c = wgetch(poller_win);
+		switch (c) {
+		case 10: /* ENTER */
+		case 27: /* ESC */
+			stop_loop = true;
+			break;
+		default:
+			break;
+		}
+	}
+
+	del_panel(poller_panel);
+	delwin(poller_win);
+
+	free_data();
+}
+
+static void
 show_stats(void)
 {
 	const int CURRENT_PAGE_STR_LEN = 50;
@@ -1812,6 +2291,7 @@ show_stats(void)
 		case '3':
 			active_tab = c - '1';
 			current_page = 0;
+			g_selected_row = 0;
 			switch_tab(active_tab);
 			break;
 		case '\t':
@@ -1832,19 +2312,43 @@ show_stats(void)
 		case 'r':
 			change_refresh_rate();
 			break;
-		case 54: /* PgDown */
+		case 't':
+			g_interval_data = !g_interval_data;
+			break;
+		case KEY_NPAGE: /* PgDown */
 			if (current_page + 1 < max_pages) {
 				current_page++;
 			}
 			wclear(g_tabs[active_tab]);
+			g_selected_row = 0;
 			draw_tabs(active_tab, g_current_sort_col[active_tab]);
 			break;
-		case 53: /* PgUp */
+		case KEY_PPAGE: /* PgUp */
 			if (current_page > 0) {
 				current_page--;
 			}
 			wclear(g_tabs[active_tab]);
+			g_selected_row = 0;
 			draw_tabs(active_tab, g_current_sort_col[active_tab]);
+			break;
+		case KEY_UP: /* Arrow up */
+			if (g_selected_row > 0) {
+				g_selected_row--;
+			}
+			break;
+		case KEY_DOWN: /* Arrow down */
+			if (g_selected_row < g_max_selected_row) {
+				g_selected_row++;
+			}
+			break;
+		case 10: /* Enter */
+			if (active_tab == THREADS_TAB) {
+				show_thread(current_page);
+			} else if (active_tab == CORES_TAB) {
+				show_core(current_page);
+			} else if (active_tab == POLLERS_TAB) {
+				show_poller(current_page);
+			}
 			break;
 		default:
 			force_refresh = false;
@@ -1887,17 +2391,20 @@ draw_interface(void)
 
 	g_menu_win = newwin(MENU_WIN_HEIGHT, g_max_col, g_max_row - MENU_WIN_HEIGHT - 1,
 			    MENU_WIN_LOCATION_COL);
+	assert(g_menu_win != NULL);
 	draw_menu_win();
 
 	for (i = 0; i < NUMBER_OF_TABS; i++) {
 		g_tab_win[i] = newwin(TAB_WIN_HEIGHT, g_max_col / NUMBER_OF_TABS - TABS_SPACING,
 				      TAB_WIN_LOCATION_ROW, g_max_col / NUMBER_OF_TABS * i + 1);
+		assert(g_tab_win[i] != NULL);
 		draw_tab_win(i);
 
 		g_tabs[i] = newwin(g_max_row - MENU_WIN_HEIGHT - TAB_WIN_HEIGHT - 2, g_max_col, TABS_LOCATION_ROW,
 				   TABS_LOCATION_COL);
 		draw_tabs(i, g_current_sort_col[i]);
 		g_panels[i] = new_panel(g_tabs[i]);
+		assert(g_panels[i] != NULL);
 	}
 
 	update_panels();
@@ -1919,11 +2426,17 @@ setup_ncurses(void)
 	noecho();
 	timeout(1);
 	curs_set(0);
+	keypad(stdscr, TRUE);
 	start_color();
 	init_pair(1, COLOR_BLACK, COLOR_GREEN);
 	init_pair(2, COLOR_BLACK, COLOR_WHITE);
 	init_pair(3, COLOR_YELLOW, COLOR_BLACK);
 	init_pair(4, COLOR_BLACK, COLOR_YELLOW);
+	init_pair(5, COLOR_GREEN, COLOR_BLACK);
+	init_pair(6, COLOR_RED, COLOR_BLACK);
+	init_pair(7, COLOR_BLUE, COLOR_BLACK);
+	init_pair(8, COLOR_RED, COLOR_WHITE);
+	init_pair(9, COLOR_BLUE, COLOR_WHITE);
 
 	if (has_colors() == FALSE) {
 		endwin();
