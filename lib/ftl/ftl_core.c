@@ -433,6 +433,11 @@ ftl_submit_read(struct ftl_io *io)
 			break;
 		}
 
+		//
+		//set busy counter for user read to nand
+		//
+		dev->stats.userread_total += num_blocks;
+
 		ftl_io_inc_req(io);
 		ftl_io_advance(io, num_blocks);
 	}
@@ -971,6 +976,7 @@ int
 ftl_task_core(void *ctx)
 {
 	struct spdk_ftl_dev *dev = ctx;
+	int    rc = SPDK_POLLER_IDLE;
 
 	if (dev->halt) {
 		if (ftl_shutdown_complete(dev)) {
@@ -978,6 +984,16 @@ ftl_task_core(void *ctx)
 			return SPDK_POLLER_IDLE;
 		}
 	}
+	//
+	//remmeber old counter before poll job
+	//
+	uint64_t				write_total_old         = dev->stats.write_total;
+	uint64_t				userread_total_old      = dev->stats.userread_total;
+	uint64_t				gcread_total_old        = dev->stats.gcread_total;
+	uint64_t				nvcachewrite_total_old  = dev->stats.nvcachewrite_total;
+	uint64_t				nvcacheread_total_old   = dev->stats.nvcacheread_total;
+	uint64_t				basicwrite_total_old    = dev->stats.basicwrite_total;
+	uint64_t				basicread_total_old     = dev->stats.basicread_total;
 
 	ftl_process_io_queue(dev);
 	ftl_writer_run(&dev->writer_user);
@@ -986,7 +1002,21 @@ ftl_task_core(void *ctx)
 	ftl_reloc(dev->reloc);
 	ftl_nv_cache_compact(dev);
 
-	return SPDK_POLLER_BUSY;
+	//
+	//if any counter is changed, we set poller as busy, otherwise it is idle
+	//
+	if ((write_total_old != dev->stats.write_total) ||
+		(userread_total_old != dev->stats.userread_total) ||
+		(gcread_total_old != dev->stats.gcread_total) ||
+		(nvcachewrite_total_old != dev->stats.nvcachewrite_total) ||
+		(nvcacheread_total_old != dev->stats.nvcacheread_total) ||
+		(basicwrite_total_old != dev->stats.basicwrite_total) ||
+		(basicread_total_old != dev->stats.basicread_total))
+	{
+		rc = SPDK_POLLER_BUSY;
+	}
+
+	return rc;
 }
 
 struct ftl_band *ftl_band_get_next_free(struct spdk_ftl_dev *dev)

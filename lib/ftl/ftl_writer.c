@@ -134,18 +134,10 @@ static struct ftl_band *_get_band(struct ftl_writer *writer)
 	return writer->band;
 }
 
-static void
-_update_stats(struct spdk_ftl_dev *dev, uint64_t num_blocks, bool uio) {
-	dev->stats.write_total += num_blocks;
-	if (uio) {
-		dev->stats.write_user += num_blocks;
-	}
-}
 
 void ftl_writer_run(struct ftl_writer *writer)
 {
 	int rc;
-	struct spdk_ftl_dev *dev = writer->dev;
 	struct ftl_band *band;
 
 	if (spdk_unlikely(!LIST_EMPTY(&writer->full_bands))) {
@@ -167,8 +159,6 @@ void ftl_writer_run(struct ftl_writer *writer)
 		rc = ftl_band_rq_write(writer->band, rq);
 		if (spdk_unlikely(rc)) {
 			rq->owner.cb(rq);
-		} else {
-			_update_stats(dev, rq->num_blocks, rq->owner.uio);
 		}
 	}
 }

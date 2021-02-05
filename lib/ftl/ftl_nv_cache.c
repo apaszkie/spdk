@@ -895,6 +895,11 @@ int ftl_nv_cache_read(struct ftl_io *io, struct ftl_addr addr,
 		     nv_cache->md_rd, addr.cache_offset, num_blocks, cb, cb_arg);
 
 	if (spdk_likely(0 == rc)) {
+		//
+		//set busy counter for nv cache read to optane
+		//
+		io->dev->stats.nvcacheread_total += num_blocks;
+
 		ftl_io_inc_req(io);
 	}
 
@@ -920,6 +925,12 @@ int ftl_nv_cache_write(struct ftl_io *io, struct ftl_addr addr,
 		     addr.cache_offset, num_blocks, cb, cb_arg);
 
 	if (spdk_likely(0 == rc)) {
+
+		//
+		//set busy counter for nv cache read to optane
+		//
+		io->dev->stats.nvcachewrite_total += num_blocks;
+
 		ftl_io_inc_req(io);
 	}
 

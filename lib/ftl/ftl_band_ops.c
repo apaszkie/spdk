@@ -66,6 +66,14 @@ static void _write_rq_end(struct spdk_bdev_io *bdev_io, bool success, void *arg)
 	spdk_bdev_free_io(bdev_io);
 }
 
+static void
+_update_stats(struct spdk_ftl_dev* dev, uint64_t num_blocks, bool uio) {
+	dev->stats.write_total += num_blocks;
+	if (uio) {
+		dev->stats.write_user += num_blocks;
+	}
+}
+
 int ftl_band_rq_write(struct ftl_band *band, struct ftl_rq *rq) {
 	struct spdk_ftl_dev *dev = band->dev;
 	int rc;
@@ -89,6 +97,9 @@ int ftl_band_rq_write(struct ftl_band *band, struct ftl_rq *rq) {
 
 	if (spdk_likely(!rc)) {
 		band->iter.queue_depth++;
+		//update user write and gc write stat here
+		_update_stats(dev, rq->num_blocks, rq->owner.uio);
+
 		ftl_band_iter_advance(band, rq->num_blocks);
 		if (ftl_band_full(band, band->iter.offset)) {
 			ftl_band_set_state(band, FTL_BAND_STATE_FULL);
@@ -128,6 +139,11 @@ int ftl_band_rq_read(struct ftl_band *band, struct ftl_rq *rq)
 			rq->num_blocks, _read_rq_end, rq);
 
 	if (spdk_likely(!rc)) {
+		//
+		//set busy counter for gc read from nand to nand
+		//
+		dev->stats.gcread_total += rq->num_blocks;
+
 		band->iter.queue_depth++;
 	}
 
@@ -182,6 +198,11 @@ int ftl_band_basic_rq_write(struct ftl_band *band, struct ftl_basic_rq *brq) {
 	}
 
 	if (spdk_likely(!rc)) {
+		//
+		//set busy counter for basic write
+		//
+		dev->stats.basicwrite_total += brq->num_blocks;
+
 		band->iter.queue_depth++;
 		ftl_band_iter_advance(band, brq->num_blocks);
 		if (ftl_band_full(band, band->iter.offset)) {
@@ -217,6 +238,12 @@ int ftl_band_basic_rq_read(struct ftl_band *band, struct ftl_basic_rq *brq)
 			brq->num_blocks, _read_brq_end, brq);
 
 	if (spdk_likely(!rc)) {
+
+		//
+		//set busy counter for basic read
+		//
+		dev->stats.basicread_total += brq->num_blocks;
+
 		band->iter.queue_depth++;
 	}
 

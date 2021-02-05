@@ -71,7 +71,7 @@ struct ftl_stats {
 	/* Number of writes scheduled directly by the user */
 	uint64_t				write_user;
 
-	/* Total number of writes */
+	/* Total number of writes to band include user and gc */
 	uint64_t				write_total;
 
 	/* Traces */
@@ -86,6 +86,24 @@ struct ftl_stats {
 	size_t					reloc_idle;
 	size_t					user_idle;
 	uint64_t				one_band;
+
+	/* counters for poller busy, upper layer reads requests direct to nand parts ftl_submit_read*/
+	uint64_t				userread_total;
+
+	/* counters for poller busy, GC layer reads requests direct to nand parts ftl_band_rq_read*/
+	uint64_t				gcread_total;
+
+	/* counters for poller busy, nv cache write requests */
+	uint64_t				nvcachewrite_total;
+
+	/* counters for poller busy, nv cache read requests */
+	uint64_t				nvcacheread_total;
+
+	/* counters for poller busy, basic write write requests */
+	uint64_t				basicwrite_total;
+
+	/* counters for poller busy, basic read requests */
+	uint64_t				basicread_total;
 };
 
 struct ftl_global_md {
