@@ -433,11 +433,6 @@ ftl_submit_read(struct ftl_io *io)
 			break;
 		}
 
-		//
-		//set busy counter for user read to nand
-		//
-		dev->stats.userread_total += num_blocks;
-
 		ftl_io_inc_req(io);
 		ftl_io_advance(io, num_blocks);
 	}
@@ -987,13 +982,7 @@ ftl_task_core(void *ctx)
 	//
 	//remmeber old counter before poll job
 	//
-	uint64_t				write_total_old         = dev->stats.write_total;
-	uint64_t				userread_total_old      = dev->stats.userread_total;
-	uint64_t				gcread_total_old        = dev->stats.gcread_total;
-	uint64_t				nvcachewrite_total_old  = dev->stats.nvcachewrite_total;
-	uint64_t				nvcacheread_total_old   = dev->stats.nvcacheread_total;
-	uint64_t				basicwrite_total_old    = dev->stats.basicwrite_total;
-	uint64_t				basicread_total_old     = dev->stats.basicread_total;
+	uint64_t				io_activity_total_old     = dev->stats.io_activity_total;
 
 	ftl_process_io_queue(dev);
 	ftl_writer_run(&dev->writer_user);
@@ -1005,13 +994,7 @@ ftl_task_core(void *ctx)
 	//
 	//if any counter is changed, we set poller as busy, otherwise it is idle
 	//
-	if ((write_total_old != dev->stats.write_total) ||
-		(userread_total_old != dev->stats.userread_total) ||
-		(gcread_total_old != dev->stats.gcread_total) ||
-		(nvcachewrite_total_old != dev->stats.nvcachewrite_total) ||
-		(nvcacheread_total_old != dev->stats.nvcacheread_total) ||
-		(basicwrite_total_old != dev->stats.basicwrite_total) ||
-		(basicread_total_old != dev->stats.basicread_total))
+	if ((io_activity_total_old != dev->stats.io_activity_total))
 	{
 		rc = SPDK_POLLER_BUSY;
 	}

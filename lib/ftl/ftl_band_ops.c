@@ -99,6 +99,10 @@ int ftl_band_rq_write(struct ftl_band *band, struct ftl_rq *rq) {
 		band->iter.queue_depth++;
 		//update user write and gc write stat here
 		_update_stats(dev, rq->num_blocks, rq->owner.uio);
+		//
+		//set busy counter for nand write from user or compaction
+		//
+		dev->stats.io_activity_total += rq->num_blocks;
 
 		ftl_band_iter_advance(band, rq->num_blocks);
 		if (ftl_band_full(band, band->iter.offset)) {
@@ -140,9 +144,9 @@ int ftl_band_rq_read(struct ftl_band *band, struct ftl_rq *rq)
 
 	if (spdk_likely(!rc)) {
 		//
-		//set busy counter for gc read from nand to nand
+		//set busy counter for nand read from user or gc
 		//
-		dev->stats.gcread_total += rq->num_blocks;
+		dev->stats.io_activity_total+= rq->num_blocks;
 
 		band->iter.queue_depth++;
 	}
@@ -201,7 +205,7 @@ int ftl_band_basic_rq_write(struct ftl_band *band, struct ftl_basic_rq *brq) {
 		//
 		//set busy counter for basic write
 		//
-		dev->stats.basicwrite_total += brq->num_blocks;
+		dev->stats.io_activity_total += brq->num_blocks;
 
 		band->iter.queue_depth++;
 		ftl_band_iter_advance(band, brq->num_blocks);
@@ -242,7 +246,7 @@ int ftl_band_basic_rq_read(struct ftl_band *band, struct ftl_basic_rq *brq)
 		//
 		//set busy counter for basic read
 		//
-		dev->stats.basicread_total += brq->num_blocks;
+		dev->stats.io_activity_total += brq->num_blocks;
 
 		band->iter.queue_depth++;
 	}

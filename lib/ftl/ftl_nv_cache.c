@@ -898,7 +898,7 @@ int ftl_nv_cache_read(struct ftl_io *io, struct ftl_addr addr,
 		//
 		//set busy counter for nv cache read to optane
 		//
-		io->dev->stats.nvcacheread_total += num_blocks;
+		io->dev->stats.io_activity_total += num_blocks;
 
 		ftl_io_inc_req(io);
 	}
@@ -929,7 +929,7 @@ int ftl_nv_cache_write(struct ftl_io *io, struct ftl_addr addr,
 		//
 		//set busy counter for nv cache read to optane
 		//
-		io->dev->stats.nvcachewrite_total += num_blocks;
+		io->dev->stats.io_activity_total += num_blocks;
 
 		ftl_io_inc_req(io);
 	}
