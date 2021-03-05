@@ -5,7 +5,7 @@ filename=${FTL_BDEV_NAME}
 # SPDK cores, FTL core mask should avoid core 0
 spdk_core_mask=${SPDK_CORE_MASK}
 # CPUS allowed fio threads cannot interleave with SPDK cores
-cpus_allowed=12-12
+cpus_allowed=12
 cpus_allowed_policy=split
 direct=1
 thread=1
@@ -22,5 +22,5 @@ bs=4k
 numjobs=1
 rw=randrw
 rwmixread=0
-iodepth=64
+iodepth=1
 runtime=3600s
