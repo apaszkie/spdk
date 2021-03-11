@@ -37,7 +37,7 @@ include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 SO_VER := 2
 SO_MINOR := 0
 
-CFLAGS += $(ENV_CFLAGS) -I$(SPDK_ROOT_DIR)/lib/bdev/
+CFLAGS += -I$(SPDK_ROOT_DIR)/lib/bdev/
 C_SRCS = bdev_raid.c bdev_raid_rpc.c raid0.c
 
 ifeq ($(CONFIG_RAID5),y)
