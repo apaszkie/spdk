@@ -668,11 +668,7 @@ test_raid5_submit_rw_request(void)
 				enum spdk_bdev_io_type io_type = io_types[ii];
 				uint64_t stripe_index;
 
-				for (stripe_index = 0; stripe_index < params->num_base_bdevs; stripe_index++) {
-					if (stripe_index >= r5info->total_stripes) {
-						continue;
-					}
-
+				for (stripe_index = 0; stripe_index < spdk_min(params->num_base_bdevs, r5info->total_stripes); stripe_index++) {
 					SPDK_NOTICELOG("%s stripe: %lu stripe_offset_blocks: %lu num_blocks: %lu\n",
 							(io_type == SPDK_BDEV_IO_TYPE_READ ? "read" : "write"),
 							stripe_index,

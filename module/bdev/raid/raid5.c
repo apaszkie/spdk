@@ -284,13 +284,21 @@ raid5_stripe_write_complete(struct stripe_request *stripe_req)
 	struct chunk *chunk;
 	struct spdk_bdev_io_wait_entry *waitq_entry;
 	struct raid5_io_channel *r5ch = stripe_req->r5ch;
+	uint8_t raid_io_count = r5ch->r5info->raid_bdev->num_base_bdevs - 1;
+	struct raid_bdev_io *raid_io[raid_io_count];
+	enum spdk_bdev_io_status status = stripe_req->status;
+	int i = 0;
 
 	FOR_EACH_DATA_CHUNK(stripe_req, chunk) {
-		raid_bdev_io_complete(chunk->raid_io, stripe_req->status);
+		raid_io[i++] = chunk->raid_io;
 		chunk->raid_io = NULL;
 	}
 
 	raid5_put_stripe_request(r5ch, stripe_req);
+
+	for (i = 0; i < raid_io_count; i++) {
+		raid_bdev_io_complete(raid_io[i], status);
+	}
 
 	waitq_entry = TAILQ_FIRST(&r5ch->retry_queue);
 	if (waitq_entry) {
