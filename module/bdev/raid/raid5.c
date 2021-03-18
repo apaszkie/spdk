@@ -647,6 +647,7 @@ raid5_start(struct raid_bdev *raid_bdev)
 	raid_bdev->bdev.blockcnt = r5info->stripe_blocks * r5info->total_stripes;
 	raid_bdev->bdev.optimal_io_boundary = raid_bdev->strip_size;
 	raid_bdev->bdev.split_on_optimal_io_boundary = true;
+	raid_bdev->bdev.write_unit_size = r5info->stripe_blocks;
 
 	raid_bdev->module_private = r5info;
 
