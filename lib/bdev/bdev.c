@@ -2218,6 +2218,14 @@ bdev_io_do_submit(struct spdk_bdev_channel *bdev_ch, struct spdk_bdev_io *bdev_i
 		}
 	}
 
+	if (spdk_unlikely(bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE &&
+			  bdev_io->bdev->write_unit_size > 1 &&
+			  bdev_io->u.bdev.num_blocks < bdev_io->bdev->write_unit_size)) {
+		SPDK_ERRLOG("IO does not match the write_unit_size\n");
+		_bdev_io_complete_in_submit(bdev_ch, bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		return;
+	}
+
 	if (spdk_likely(TAILQ_EMPTY(&shared_resource->nomem_io))) {
 		bdev_ch->io_outstanding++;
 		shared_resource->io_outstanding++;
@@ -2288,7 +2296,11 @@ bdev_rw_should_split(struct spdk_bdev_io *bdev_io)
 	uint32_t max_size = bdev_io->bdev->max_segment_size;
 	int max_segs = bdev_io->bdev->max_num_segments;
 
-	io_boundary = bdev_io->bdev->split_on_optimal_io_boundary ? io_boundary : 0;
+	if (bdev_io->bdev->write_unit_size > 1 && bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE) {
+		io_boundary = bdev_io->bdev->write_unit_size;
+	} else {
+		io_boundary = bdev_io->bdev->split_on_optimal_io_boundary ? io_boundary : 0;
+	}
 
 	if (spdk_likely(!io_boundary && !max_segs && !max_size)) {
 		return false;
@@ -2504,7 +2516,12 @@ _bdev_rw_split(void *_bdev_io)
 	max_segment_size = max_segment_size ? max_segment_size : UINT32_MAX;
 	max_child_iovcnt = max_child_iovcnt ? spdk_min(max_child_iovcnt, BDEV_IO_NUM_CHILD_IOV) :
 			   BDEV_IO_NUM_CHILD_IOV;
-	io_boundary = bdev->split_on_optimal_io_boundary ? io_boundary : UINT32_MAX;
+
+	if (bdev_io->bdev->write_unit_size > 1 && bdev_io->type == SPDK_BDEV_IO_TYPE_WRITE) {
+		io_boundary = bdev_io->bdev->write_unit_size;
+	} else {
+		io_boundary = bdev->split_on_optimal_io_boundary ? io_boundary : UINT32_MAX;
+	}
 
 	remaining = bdev_io->u.bdev.split_remaining_num_blocks;
 	current_offset = bdev_io->u.bdev.split_current_offset_blocks;
