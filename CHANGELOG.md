@@ -12,6 +12,8 @@ A new parameter `bounce_iovcnt` was added to `spdk_dif_generate_copy` and `spdk_
 The `bounce_iovcnt` is used to specify the number of bounce_iov to support multiple block-aligned
 fragment copies.
 
+A new API `spdk_xor_gen` was added to generate XOR from multiple source buffers.
+
 ### bdev
 
 Removed deprecated spdk_bdev_module_finish_done(). Use spdk_bdev_module_fini_done() instead.
