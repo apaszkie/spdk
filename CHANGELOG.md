@@ -108,6 +108,10 @@ bdevs is one after another. The concat bdev is extendable. When the free space o
 concat bdev is not enough, the user can deconstruct the concat bdev, then reconstruct it
 with an additional underlying bdev.
 
+Renamed the `raid5` module to `raid5f` to reflect that it is not a traditional
+RAID5 implementation - only full stripe writes are supported, partial stripe
+writes (read-modify-write) are not.
+
 ### sock
 
 Allow MSG_ZEROCOPY flag to be set or not according to data size, which can be enabled and

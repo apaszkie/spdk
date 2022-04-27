@@ -33,6 +33,6 @@
 
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../../../../../..)
 
-TEST_FILE = raid5_ut.c
+TEST_FILE = raid5f_ut.c
 
 include $(SPDK_ROOT_DIR)/mk/spdk.unittest.mk
