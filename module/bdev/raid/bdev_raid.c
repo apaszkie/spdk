@@ -1003,8 +1003,16 @@ raid_bdev_exit(void)
 static int
 raid_bdev_get_ctx_size(void)
 {
+	struct raid_bdev_module *raid_module;
+	size_t max_module_ctx_size = 0;
+
 	SPDK_DEBUGLOG(bdev_raid, "raid_bdev_get_ctx_size\n");
-	return sizeof(struct raid_bdev_io);
+
+	TAILQ_FOREACH(raid_module, &g_raid_modules, link) {
+		max_module_ctx_size = spdk_max(max_module_ctx_size, raid_module->raid_io_ctx_size);
+	}
+
+	return sizeof(struct raid_bdev_io) + max_module_ctx_size;
 }
 
 /*

@@ -109,8 +109,10 @@ struct raid_bdev_io {
 	uint8_t				base_bdev_io_submitted;
 	uint8_t				base_bdev_io_status;
 
-	/* Private data for the raid module */
-	void				*module_private;
+	uint8_t				padding[6];
+
+	/* Additional context for the raid module */
+	uint8_t				module_ctx[0];
 };
 
 /*
@@ -282,6 +284,9 @@ struct raid_bdev_module {
 
 	/* Size of the additional resource allocated per IO channel context. */
 	size_t ioch_resource_size;
+
+	/* Size of module's per bdev IO context */
+	size_t raid_io_ctx_size;
 
 	/*
 	 * Called when the raid is starting, right before changing the state to
