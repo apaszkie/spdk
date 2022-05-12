@@ -80,6 +80,32 @@ struct stripe_request {
 
 	/* Array of chunks corresponding to base_bdevs */
 	struct chunk *chunks[RAID5F_MAX_BASE_BDEVS];
+
+	struct spdk_thread *origin_thread;
+	struct raid5f_worker *worker;
+};
+
+struct raid5f_worker {
+	struct raid5f_info *r5f_info;
+	struct spdk_thread *thread;
+	struct spdk_io_channel *ch;
+	TAILQ_ENTRY(raid5f_worker) link;
+};
+
+struct raid5f_worker_io_channel {
+	/* Array of iovec iterators for each data chunk */
+	struct iov_iter {
+		struct iovec *iovs;
+		int iovcnt;
+		int index;
+		size_t offset;
+	} *chunk_iov_iters;
+
+	/* Array of source buffer pointers for parity calculation */
+	void **chunk_xor_buffers;
+
+	/* Bounce buffers for parity calculation in case of unaligned source buffers */
+	struct iovec *chunk_xor_bounce_buffers;
 };
 
 struct raid5f_info {
@@ -100,25 +126,15 @@ struct raid5f_info {
 
 	/* Parity buffers */
 	struct spdk_ring *stripe_parity_buffers;
+
+	TAILQ_HEAD(, raid5f_worker) workers;
 };
 
 struct raid5f_io_channel {
 	/* Number of in flight raid IOs on this channel */
 	uint64_t num_ios;
 
-	/* Array of iovec iterators for each data chunk */
-	struct iov_iter {
-		struct iovec *iovs;
-		int iovcnt;
-		int index;
-		size_t offset;
-	} *chunk_iov_iters;
-
-	/* Array of source buffer pointers for parity calculation */
-	void **chunk_xor_buffers;
-
-	/* Bounce buffers for parity calculation in case of unaligned source buffers */
-	struct iovec *chunk_xor_bounce_buffers;
+	struct raid5f_worker *next_worker;
 };
 
 #define __CHUNK_COND(req, c, cp) \
@@ -170,7 +186,7 @@ static int
 raid5f_xor_stripe(struct stripe_request *stripe_req)
 {
 	struct raid_bdev_io *raid_io = stripe_req->raid_io;
-	struct raid5f_io_channel *r5ch = (struct raid5f_io_channel *)raid_io->raid_ch->resource;
+	struct raid5f_worker_io_channel *worker_ch = spdk_io_channel_get_ctx(stripe_req->worker->ch);
 	struct raid_bdev *raid_bdev = raid_io->raid_bdev;
 	size_t remaining = raid_bdev->strip_size << raid_bdev->blocklen_shift;
 	uint8_t n_src = raid5f_stripe_data_chunks_num(raid_bdev);
@@ -182,7 +198,7 @@ raid5f_xor_stripe(struct stripe_request *stripe_req)
 
 	c = 0;
 	FOR_EACH_DATA_CHUNK(stripe_req, chunk) {
-		struct iov_iter *iov_iter = &r5ch->chunk_iov_iters[c];
+		struct iov_iter *iov_iter = &worker_ch->chunk_iov_iters[c];
 		bool aligned = true;
 		int i;
 
@@ -198,7 +214,7 @@ raid5f_xor_stripe(struct stripe_request *stripe_req)
 			iov_iter->iovs = chunk->iovs;
 			iov_iter->iovcnt = chunk->iovcnt;
 		} else {
-			iov_iter->iovs = &r5ch->chunk_xor_bounce_buffers[c];
+			iov_iter->iovs = &worker_ch->chunk_xor_bounce_buffers[c];
 			iov_iter->iovcnt = 1;
 			spdk_iovcpy(chunk->iovs, chunk->iovcnt, iov_iter->iovs, iov_iter->iovcnt);
 		}
@@ -214,23 +230,23 @@ raid5f_xor_stripe(struct stripe_request *stripe_req)
 		uint8_t i;
 
 		for (i = 0; i < n_src; i++) {
-			struct iov_iter *iov_iter = &r5ch->chunk_iov_iters[i];
+			struct iov_iter *iov_iter = &worker_ch->chunk_iov_iters[i];
 			struct iovec *iov = &iov_iter->iovs[iov_iter->index];
 
 			len = spdk_min(len, iov->iov_len - iov_iter->offset);
-			r5ch->chunk_xor_buffers[i] = iov->iov_base + iov_iter->offset;
+			worker_ch->chunk_xor_buffers[i] = iov->iov_base + iov_iter->offset;
 		}
 
 		assert(len > 0);
 
-		ret = spdk_xor_gen(dest, r5ch->chunk_xor_buffers, n_src, len);
+		ret = spdk_xor_gen(dest, worker_ch->chunk_xor_buffers, n_src, len);
 		if (spdk_unlikely(ret)) {
 			SPDK_ERRLOG("stripe xor failed\n");
 			return ret;
 		}
 
 		for (i = 0; i < n_src; i++) {
-			struct iov_iter *iov_iter = &r5ch->chunk_iov_iters[i];
+			struct iov_iter *iov_iter = &worker_ch->chunk_iov_iters[i];
 			struct iovec *iov = &iov_iter->iovs[iov_iter->index];
 
 			iov_iter->offset += len;
@@ -248,19 +264,27 @@ raid5f_xor_stripe(struct stripe_request *stripe_req)
 }
 
 static void
-raid5f_chunk_write_complete(struct chunk *chunk, enum spdk_bdev_io_status status)
+raid5f_stripe_request_release(struct stripe_request *stripe_req)
 {
-	struct stripe_request *stripe_req = chunk->stripe_req;
 	struct raid_bdev_io *raid_io = stripe_req->raid_io;
 	struct raid_bdev *raid_bdev = raid_io->raid_bdev;
 	struct raid5f_info *r5f_info = raid_bdev->module_private;
 	struct raid5f_io_channel *r5ch = (struct raid5f_io_channel *)raid_io->raid_ch->resource;
 
+	raid5f_parity_buf_put(r5f_info, stripe_req->parity_buf);
+	spdk_mempool_put_bulk(r5f_info->chunk_mp, (void **)stripe_req->chunks,
+			      raid_bdev->num_base_bdevs);
+	r5ch->num_ios--;
+}
+
+static void
+raid5f_chunk_write_complete(struct chunk *chunk, enum spdk_bdev_io_status status)
+{
+	struct stripe_request *stripe_req = chunk->stripe_req;
+	struct raid_bdev_io *raid_io = stripe_req->raid_io;
+
 	if (raid_io->base_bdev_io_remaining == 1) {
-		raid5f_parity_buf_put(r5f_info, stripe_req->parity_buf);
-		spdk_mempool_put_bulk(r5f_info->chunk_mp, (void **)stripe_req->chunks,
-				      raid_bdev->num_base_bdevs);
-		r5ch->num_ios--;
+		raid5f_stripe_request_release(stripe_req);
 	}
 
 	raid_bdev_io_complete_part(raid_io, 1, status);
@@ -394,18 +418,53 @@ raid5f_stripe_request_submit_chunks(struct stripe_request *stripe_req)
 	}
 }
 
-static void
-raid5f_submit_stripe_request(struct stripe_request *stripe_req)
-{
-	if (spdk_unlikely(raid5f_xor_stripe(stripe_req) != 0)) {
-		struct raid5f_io_channel *r5ch = (struct raid5f_io_channel *)stripe_req->raid_io->raid_ch->resource;
 
-		r5ch->num_ios--;
-		raid_bdev_io_complete(stripe_req->raid_io, SPDK_BDEV_IO_STATUS_FAILED);
+static void
+_raid5f_stripe_request_submit_chunks(void *_stripe_req)
+{
+	struct stripe_request *stripe_req = _stripe_req;
+
+	raid5f_stripe_request_submit_chunks(stripe_req);
+}
+
+static void
+raid5f_stripe_request_fail(void *_stripe_req)
+{
+	struct stripe_request *stripe_req = _stripe_req;
+
+	raid5f_stripe_request_release(stripe_req);
+	raid_bdev_io_complete(stripe_req->raid_io, SPDK_BDEV_IO_STATUS_FAILED);
+}
+
+static void
+_raid5f_submit_stripe_request(void *_stripe_req)
+{
+	struct stripe_request *stripe_req = _stripe_req;
+
+	if (spdk_unlikely(raid5f_xor_stripe(stripe_req) != 0)) {
+		spdk_thread_send_msg(stripe_req->origin_thread, raid5f_stripe_request_fail, stripe_req);
 		return;
 	}
 
-	raid5f_stripe_request_submit_chunks(stripe_req);
+	spdk_thread_send_msg(stripe_req->origin_thread, _raid5f_stripe_request_submit_chunks, stripe_req);
+}
+
+
+static void
+raid5f_submit_stripe_request(struct stripe_request *stripe_req)
+{
+	struct raid5f_io_channel *r5ch = (struct raid5f_io_channel *)stripe_req->raid_io->raid_ch->resource;
+	struct raid5f_worker *worker = r5ch->next_worker;
+
+	if (!worker) {
+		worker = TAILQ_FIRST(&stripe_req->r5f_info->workers);
+	}
+	r5ch->next_worker = TAILQ_NEXT(worker, link);
+
+	stripe_req->origin_thread = spdk_get_thread();
+	stripe_req->worker = worker;
+
+	spdk_thread_send_msg(worker->thread, _raid5f_submit_stripe_request, stripe_req);
 }
 
 static int
@@ -557,65 +616,26 @@ raid5f_submit_rw_request(struct raid_bdev_io *raid_io)
 }
 
 static void
-raid5f_ioch_resource_deinit(struct raid_bdev *raid_bdev, void *resource)
+raid5f_worker_deinit(void *_worker)
 {
-	struct raid5f_io_channel *r5ch = resource;
-	int i;
+	struct raid5f_worker *worker = _worker;
 
-	if (r5ch->chunk_xor_bounce_buffers) {
-		for (i = 0; i < raid5f_stripe_data_chunks_num(raid_bdev); i++) {
-			free(r5ch->chunk_xor_bounce_buffers[i].iov_base);
-		}
-		free(r5ch->chunk_xor_bounce_buffers);
-	}
+	assert(spdk_get_thread() == worker->thread);
 
-	free(r5ch->chunk_xor_buffers);
-	free(r5ch->chunk_iov_iters);
+	spdk_put_io_channel(worker->ch);
+	spdk_thread_exit(worker->thread);
+	free(worker);
 }
 
-static int
-raid5f_ioch_resource_init(struct raid_bdev *raid_bdev, void *resource)
+static void
+raid5f_stop_worker_threads(struct raid5f_info *r5f_info)
 {
-	struct raid5f_io_channel *r5ch = resource;
-	size_t chunk_len = raid_bdev->strip_size << raid_bdev->blocklen_shift;
-	int status = 0;
-	int i;
+	struct raid5f_worker *worker, *tmp;
 
-	r5ch->chunk_iov_iters = calloc(raid5f_stripe_data_chunks_num(raid_bdev),
-				       sizeof(r5ch->chunk_iov_iters[0]));
-	if (!r5ch->chunk_iov_iters) {
-		status = -ENOMEM;
-		goto out;
+	TAILQ_FOREACH_SAFE(worker, &r5f_info->workers, link, tmp) {
+		TAILQ_REMOVE(&r5f_info->workers, worker, link);
+		spdk_thread_send_msg(worker->thread, raid5f_worker_deinit, worker);
 	}
-
-	r5ch->chunk_xor_buffers = calloc(raid5f_stripe_data_chunks_num(raid_bdev),
-					 sizeof(r5ch->chunk_xor_buffers[0]));
-	if (!r5ch->chunk_xor_buffers) {
-		status = -ENOMEM;
-		goto out;
-	}
-
-	r5ch->chunk_xor_bounce_buffers = calloc(raid5f_stripe_data_chunks_num(raid_bdev),
-						sizeof(r5ch->chunk_xor_bounce_buffers[0]));
-	if (!r5ch->chunk_xor_bounce_buffers) {
-		status = -ENOMEM;
-		goto out;
-	}
-
-	for (i = 0; i < raid5f_stripe_data_chunks_num(raid_bdev); i++) {
-		status = posix_memalign(&r5ch->chunk_xor_bounce_buffers[i].iov_base,
-					spdk_xor_get_buf_alignment(), chunk_len);
-		if (status) {
-			goto out;
-		}
-		r5ch->chunk_xor_bounce_buffers[i].iov_len = chunk_len;
-	}
-out:
-	if (status) {
-		SPDK_ERRLOG("Failed to initialize io channel\n");
-		raid5f_ioch_resource_deinit(raid_bdev, r5ch);
-	}
-	return status;
 }
 
 static void
@@ -645,6 +665,10 @@ raid5f_stop(struct raid_bdev *raid_bdev)
 		spdk_ring_free(r5f_info->stripe_parity_buffers);
 	}
 
+	raid5f_stop_worker_threads(r5f_info);
+
+	spdk_io_device_unregister(&r5f_info->workers, NULL);
+
 	free(r5f_info);
 }
 
@@ -659,6 +683,136 @@ raid5f_chunk_ctor(struct spdk_mempool *mp, void *opaque, void *obj, unsigned obj
 	if (!chunk->iovs) {
 		r5f_info->status = -ENOMEM;
 	}
+}
+
+static void
+raid5f_worker_io_channel_destroy(void *io_device, void *ctx_buf)
+{
+	struct raid5f_worker_io_channel *worker_ch = ctx_buf;
+	struct raid5f_info *r5f_info = SPDK_CONTAINEROF(io_device, struct raid5f_info, workers);
+	struct raid_bdev *raid_bdev = r5f_info->raid_bdev;
+	int i;
+
+	if (worker_ch->chunk_xor_bounce_buffers) {
+		for (i = 0; i < raid5f_stripe_data_chunks_num(raid_bdev); i++) {
+			free(worker_ch->chunk_xor_bounce_buffers[i].iov_base);
+		}
+		free(worker_ch->chunk_xor_bounce_buffers);
+	}
+
+	free(worker_ch->chunk_xor_buffers);
+	free(worker_ch->chunk_iov_iters);
+}
+
+static int
+raid5f_worker_io_channel_create(void *io_device, void *ctx_buf)
+{
+	struct raid5f_worker_io_channel *worker_ch = ctx_buf;
+	struct raid5f_info *r5f_info = SPDK_CONTAINEROF(io_device, struct raid5f_info, workers);
+	struct raid_bdev *raid_bdev = r5f_info->raid_bdev;
+	size_t chunk_len = raid_bdev->strip_size << raid_bdev->blocklen_shift;
+	int status = 0;
+	int i;
+
+	worker_ch->chunk_iov_iters = calloc(raid5f_stripe_data_chunks_num(raid_bdev),
+				       sizeof(worker_ch->chunk_iov_iters[0]));
+	if (!worker_ch->chunk_iov_iters) {
+		status = -ENOMEM;
+		goto out;
+	}
+
+	worker_ch->chunk_xor_buffers = calloc(raid5f_stripe_data_chunks_num(raid_bdev),
+					 sizeof(worker_ch->chunk_xor_buffers[0]));
+	if (!worker_ch->chunk_xor_buffers) {
+		status = -ENOMEM;
+		goto out;
+	}
+
+	worker_ch->chunk_xor_bounce_buffers = calloc(raid5f_stripe_data_chunks_num(raid_bdev),
+						sizeof(worker_ch->chunk_xor_bounce_buffers[0]));
+	if (!worker_ch->chunk_xor_bounce_buffers) {
+		status = -ENOMEM;
+		goto out;
+	}
+
+	for (i = 0; i < raid5f_stripe_data_chunks_num(raid_bdev); i++) {
+		status = posix_memalign(&worker_ch->chunk_xor_bounce_buffers[i].iov_base,
+					spdk_xor_get_buf_alignment(), chunk_len);
+		if (status) {
+			goto out;
+		}
+		worker_ch->chunk_xor_bounce_buffers[i].iov_len = chunk_len;
+	}
+out:
+	if (status) {
+		SPDK_ERRLOG("Failed to initialize io channel\n");
+		raid5f_worker_io_channel_destroy(io_device, ctx_buf);
+	}
+	return status;
+}
+
+static void
+raid5f_worker_init(void *_worker)
+{
+	struct raid5f_worker *worker = _worker;
+
+	assert(spdk_get_thread() == worker->thread);
+
+	worker->ch = spdk_get_io_channel(&worker->r5f_info->workers);
+}
+
+static int
+raid5f_start_worker_threads(struct raid5f_info *r5f_info)
+{
+	struct spdk_cpuset cpumask, tmp_cpumask;
+	struct raid5f_worker *worker;
+	char name[128];
+	uint32_t i;
+	int ret = 0;
+
+	TAILQ_INIT(&r5f_info->workers);
+
+	if (spdk_cpuset_parse(&cpumask, "0xf0")) {
+		return -EINVAL;
+	}
+
+	SPDK_ENV_FOREACH_CORE(i) {
+		if (spdk_cpuset_get_cpu(&cpumask, i)) {
+			worker = malloc(sizeof(*worker));
+			if (!worker) {
+				ret = -ENOMEM;
+				break;
+			}
+			worker->r5f_info = r5f_info;
+
+			spdk_cpuset_zero(&tmp_cpumask);
+			spdk_cpuset_set_cpu(&tmp_cpumask, i, true);
+			snprintf(name, sizeof(name), "raid5f_%p_worker_%u", r5f_info->raid_bdev, i);
+			worker->thread = spdk_thread_create(name, &tmp_cpumask);
+			if (!worker->thread) {
+				free(worker);
+				ret = -ENOMEM;
+				break;
+			}
+			TAILQ_INSERT_TAIL(&r5f_info->workers, worker, link);
+		}
+	}
+	if (ret) {
+		struct raid5f_worker *tmp;
+
+		TAILQ_FOREACH_SAFE(worker, &r5f_info->workers, link, tmp) {
+			TAILQ_REMOVE(&r5f_info->workers, worker, link);
+			spdk_thread_exit(worker->thread);
+			free(worker);
+		}
+		return ret;
+	}
+
+	TAILQ_FOREACH(worker, &r5f_info->workers, link) {
+		spdk_thread_send_msg(worker->thread, raid5f_worker_init, worker);
+	}
+
+	return 0;
 }
 
 static int
@@ -715,6 +869,15 @@ raid5f_start(struct raid_bdev *raid_bdev)
 	} else {
 		ret = r5f_info->status;
 	}
+	if (ret) {
+		goto out;
+	}
+
+	spdk_io_device_register(&r5f_info->workers, raid5f_worker_io_channel_create,
+				raid5f_worker_io_channel_destroy,
+				sizeof(struct raid5f_worker_io_channel), NULL);
+
+	ret = raid5f_start_worker_threads(r5f_info);
 out:
 	if (ret) {
 		raid5f_stop(raid_bdev);
@@ -738,8 +901,6 @@ static struct raid_bdev_module g_raid5f_module = {
 	.start = raid5f_start,
 	.stop = raid5f_stop,
 	.submit_rw_request = raid5f_submit_rw_request,
-	.ioch_resource_init = raid5f_ioch_resource_init,
-	.ioch_resource_deinit = raid5f_ioch_resource_deinit,
 };
 RAID_MODULE_REGISTER(&g_raid5f_module)
 

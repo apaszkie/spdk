@@ -589,8 +589,6 @@ run_for_each_raid5f_config(void (*test_fn)(struct raid_bdev *raid_bdev,
 			struct raid_bdev_io_channel raid_ch;
 			struct raid5f_io_channel placeholder;
 		} ch = { 0 };
-		int ret;
-		struct raid5f_io_channel *r5ch = (void *)ch.raid_ch.resource;
 
 		r5f_info = create_raid5f(params);
 
@@ -598,12 +596,7 @@ run_for_each_raid5f_config(void (*test_fn)(struct raid_bdev *raid_bdev,
 		ch.raid_ch.base_channel = calloc(params->num_base_bdevs, sizeof(struct spdk_io_channel *));
 		SPDK_CU_ASSERT_FATAL(ch.raid_ch.base_channel != NULL);
 
-		ret = raid5f_ioch_resource_init(r5f_info->raid_bdev, r5ch);
-		SPDK_CU_ASSERT_FATAL(ret == 0);
-
 		test_fn(r5f_info->raid_bdev, &ch.raid_ch);
-
-		raid5f_ioch_resource_deinit(r5f_info->raid_bdev, r5ch);
 
 		free(ch.raid_ch.base_channel);
 
