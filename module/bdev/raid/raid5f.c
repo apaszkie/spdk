@@ -650,6 +650,13 @@ raid5f_chunk_dtor(struct spdk_mempool *mp, void *opaque, void *obj, unsigned obj
 	free(chunk->iovs);
 }
 
+static void raid5f_workers_io_device_unregister_done(void *io_device)
+{
+	struct raid5f_info *r5f_info = SPDK_CONTAINEROF(io_device, struct raid5f_info, workers);
+
+	free(r5f_info);
+}
+
 static void
 raid5f_stop(struct raid_bdev *raid_bdev)
 {
@@ -671,9 +678,7 @@ raid5f_stop(struct raid_bdev *raid_bdev)
 
 	raid5f_stop_worker_threads(r5f_info);
 
-	spdk_io_device_unregister(&r5f_info->workers, NULL);
-
-	free(r5f_info);
+	spdk_io_device_unregister(&r5f_info->workers, raid5f_workers_io_device_unregister_done);
 }
 
 static void
@@ -693,12 +698,11 @@ static void
 raid5f_worker_io_channel_destroy(void *io_device, void *ctx_buf)
 {
 	struct raid5f_worker_io_channel *worker_ch = ctx_buf;
-	struct raid5f_info *r5f_info = SPDK_CONTAINEROF(io_device, struct raid5f_info, workers);
-	struct raid_bdev *raid_bdev = r5f_info->raid_bdev;
-	int i;
 
 	if (worker_ch->chunk_xor_bounce_buffers) {
-		for (i = 0; i < raid5f_stripe_data_chunks_num(raid_bdev); i++) {
+		int i;
+
+		for (i = 0; i < RAID5F_MAX_BASE_BDEVS; i++) {
 			free(worker_ch->chunk_xor_bounce_buffers[i].iov_base);
 		}
 		free(worker_ch->chunk_xor_bounce_buffers);
@@ -732,7 +736,7 @@ raid5f_worker_io_channel_create(void *io_device, void *ctx_buf)
 		goto out;
 	}
 
-	worker_ch->chunk_xor_bounce_buffers = calloc(raid5f_stripe_data_chunks_num(raid_bdev),
+	worker_ch->chunk_xor_bounce_buffers = calloc(RAID5F_MAX_BASE_BDEVS,
 						sizeof(worker_ch->chunk_xor_bounce_buffers[0]));
 	if (!worker_ch->chunk_xor_bounce_buffers) {
 		status = -ENOMEM;
