@@ -137,6 +137,10 @@ struct raid5f_io_channel {
 	struct raid5f_worker *next_worker;
 };
 
+struct raid5f_config {
+	struct spdk_cpuset worker_cpuset;
+};
+
 #define __CHUNK_COND(req, c, cp) \
 	(cp < req->chunks + req->r5f_info->raid_bdev->num_base_bdevs) && (c = *cp)
 
@@ -764,7 +768,8 @@ raid5f_worker_init(void *_worker)
 static int
 raid5f_start_worker_threads(struct raid5f_info *r5f_info)
 {
-	struct spdk_cpuset cpumask, tmp_cpumask;
+	struct raid5f_config *r5f_config = r5f_info->raid_bdev->config->module_cfg;
+	struct spdk_cpuset tmp_cpuset;
 	struct raid5f_worker *worker;
 	char name[128];
 	uint32_t i;
@@ -772,12 +777,8 @@ raid5f_start_worker_threads(struct raid5f_info *r5f_info)
 
 	TAILQ_INIT(&r5f_info->workers);
 
-	if (spdk_cpuset_parse(&cpumask, "0xf0")) {
-		return -EINVAL;
-	}
-
 	SPDK_ENV_FOREACH_CORE(i) {
-		if (spdk_cpuset_get_cpu(&cpumask, i)) {
+		if (spdk_cpuset_get_cpu(&r5f_config->worker_cpuset, i)) {
 			worker = malloc(sizeof(*worker));
 			if (!worker) {
 				ret = -ENOMEM;
@@ -785,10 +786,10 @@ raid5f_start_worker_threads(struct raid5f_info *r5f_info)
 			}
 			worker->r5f_info = r5f_info;
 
-			spdk_cpuset_zero(&tmp_cpumask);
-			spdk_cpuset_set_cpu(&tmp_cpumask, i, true);
+			spdk_cpuset_zero(&tmp_cpuset);
+			spdk_cpuset_set_cpu(&tmp_cpuset, i, true);
 			snprintf(name, sizeof(name), "raid5f_%p_worker_%u", r5f_info->raid_bdev, i);
-			worker->thread = spdk_thread_create(name, &tmp_cpumask);
+			worker->thread = spdk_thread_create(name, &tmp_cpuset);
 			if (!worker->thread) {
 				free(worker);
 				ret = -ENOMEM;
@@ -892,12 +893,73 @@ out:
 	return 0;
 }
 
+static int
+raid5f_decode_cpuset(const struct spdk_json_val *val, void *out)
+{
+	int ret;
+	char *str = NULL;
+	struct spdk_cpuset *cpuset = out;
+
+	ret = spdk_json_decode_string(val, &str);
+	if (ret == 0 && str != NULL) {
+		if (spdk_cpuset_parse(cpuset, str)) {
+			ret = -EINVAL;
+		}
+	}
+
+	free(str);
+	return ret;
+}
+
+static struct spdk_json_object_decoder raid5f_config_decoders[] = {
+	{"worker_cpumask", offsetof(struct raid5f_config, worker_cpuset), raid5f_decode_cpuset, true},
+};
+
+static int
+raid5f_config_parse(struct raid_bdev_config *raid_cfg, const struct spdk_json_val *module_params)
+{
+	struct raid5f_config *r5f_config;
+
+	r5f_config = calloc(1, sizeof(*r5f_config));
+	if (!r5f_config) {
+		return -ENOMEM;
+	}
+
+	if (module_params) {
+		int ret;
+
+		ret = spdk_json_decode_object(module_params, raid5f_config_decoders,
+					      SPDK_COUNTOF(raid5f_config_decoders), r5f_config);
+		if (ret) {
+			free(r5f_config);
+			return ret;
+		}
+	}
+
+	raid_cfg->module_cfg = r5f_config;
+
+	return 0;
+}
+
+static void
+raid5f_config_cleanup(struct raid_bdev_config *raid_cfg)
+{
+	if (raid_cfg->module_cfg) {
+		struct raid5f_config *r5f_config = raid_cfg->module_cfg;
+
+		raid_cfg->module_cfg = NULL;
+		free(r5f_config);
+	}
+}
+
 static struct raid_bdev_module g_raid5f_module = {
 	.level = RAID5F,
 	.base_bdevs_min = 3,
 	.base_bdevs_max_degraded = 1,
 	.ioch_resource_size = sizeof(struct raid5f_io_channel),
 	.raid_io_ctx_size = sizeof(struct stripe_request),
+	.config_parse = raid5f_config_parse,
+	.config_cleanup = raid5f_config_cleanup,
 	.start = raid5f_start,
 	.stop = raid5f_stop,
 	.submit_rw_request = raid5f_submit_rw_request,

@@ -53,6 +53,9 @@ DEFINE_STUB(spdk_bdev_queue_io_wait, int, (struct spdk_bdev *bdev, struct spdk_i
 DEFINE_STUB(spdk_bdev_get_buf_align, size_t, (const struct spdk_bdev *bdev), 0);
 DEFINE_STUB(spdk_mempool_obj_iter, uint32_t, (struct spdk_mempool *mp, spdk_mempool_obj_cb_t obj_cb,
 		void *obj_cb_arg), 0);
+DEFINE_STUB(spdk_json_decode_object, int, (const struct spdk_json_val *values,
+		const struct spdk_json_object_decoder *decoders, size_t num_decoders, void *out), 0);
+DEFINE_STUB(spdk_json_decode_string, int, (const struct spdk_json_val *val, void *out), 0);
 
 void
 raid_bdev_io_complete(struct raid_bdev_io *raid_io, enum spdk_bdev_io_status status)

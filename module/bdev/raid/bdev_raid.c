@@ -778,6 +778,14 @@ raid_bdev_config_cleanup(struct raid_bdev_config *raid_cfg)
 	TAILQ_REMOVE(&g_raid_config.raid_bdev_config_head, raid_cfg, link);
 	g_raid_config.total_raid_bdev--;
 
+	if (raid_cfg->module_cfg) {
+		struct raid_bdev_module *module = raid_bdev_module_find(raid_cfg->level);
+
+		assert(module);
+		assert(module->config_cleanup);
+
+		module->config_cleanup(raid_cfg);
+	}
 	if (raid_cfg->base_bdev) {
 		for (i = 0; i < raid_cfg->num_base_bdevs; i++) {
 			free(raid_cfg->base_bdev[i].name);
@@ -822,9 +830,11 @@ raid_bdev_config_find_by_name(const char *raid_name)
  */
 int
 raid_bdev_config_add(const char *raid_name, uint32_t strip_size, uint8_t num_base_bdevs,
-		     enum raid_level level, struct raid_bdev_config **_raid_cfg)
+		     enum raid_level level, const struct spdk_json_val *module_params,
+		     struct raid_bdev_config **_raid_cfg)
 {
 	struct raid_bdev_config *raid_cfg;
+	struct raid_bdev_module *module;
 
 	raid_cfg = raid_bdev_config_find_by_name(raid_name);
 	if (raid_cfg != NULL) {
@@ -840,6 +850,18 @@ raid_bdev_config_add(const char *raid_name, uint32_t strip_size, uint8_t num_bas
 
 	if (num_base_bdevs == 0) {
 		SPDK_ERRLOG("Invalid base device count %u\n", num_base_bdevs);
+		return -EINVAL;
+	}
+
+	module = raid_bdev_module_find(level);
+	if (module == NULL) {
+		SPDK_ERRLOG("Unsupported raid level '%d'\n", level);
+		return -EINVAL;
+	}
+
+	if (!module->config_parse && module_params) {
+		SPDK_ERRLOG("Invalid parameters for level '%s'\n",
+			    raid_bdev_level_to_str(level));
 		return -EINVAL;
 	}
 
@@ -865,6 +887,16 @@ raid_bdev_config_add(const char *raid_name, uint32_t strip_size, uint8_t num_bas
 		free(raid_cfg);
 		SPDK_ERRLOG("unable to allocate memory\n");
 		return -ENOMEM;
+	}
+
+	if (module->config_parse) {
+		int ret = module->config_parse(raid_cfg, module_params);
+		if (ret) {
+			free(raid_cfg->base_bdev);
+			free(raid_cfg->name);
+			free(raid_cfg);
+			return ret;
+		}
 	}
 
 	TAILQ_INSERT_TAIL(&g_raid_config.raid_bdev_config_head, raid_cfg, link);
@@ -1095,13 +1127,9 @@ raid_bdev_create(struct raid_bdev_config *raid_cfg)
 {
 	struct raid_bdev *raid_bdev;
 	struct spdk_bdev *raid_bdev_gen;
-	struct raid_bdev_module *module;
+	struct raid_bdev_module *module = raid_bdev_module_find(raid_cfg->level);
 
-	module = raid_bdev_module_find(raid_cfg->level);
-	if (module == NULL) {
-		SPDK_ERRLOG("Unsupported raid level '%d'\n", raid_cfg->level);
-		return -EINVAL;
-	}
+	assert(module != NULL);
 
 	assert(module->base_bdevs_min != 0);
 	if (raid_cfg->num_base_bdevs < module->base_bdevs_min) {

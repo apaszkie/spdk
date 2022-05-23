@@ -207,6 +207,8 @@ struct raid_bdev_config {
 	/* raid level */
 	enum raid_level			level;
 
+	void				*module_cfg;
+
 	TAILQ_ENTRY(raid_bdev_config)	link;
 };
 
@@ -258,7 +260,8 @@ int raid_bdev_add_base_devices(struct raid_bdev_config *raid_cfg);
 void raid_bdev_remove_base_devices(struct raid_bdev_config *raid_cfg,
 				   raid_bdev_destruct_cb cb_fn, void *cb_ctx);
 int raid_bdev_config_add(const char *raid_name, uint32_t strip_size, uint8_t num_base_bdevs,
-			 enum raid_level level, struct raid_bdev_config **_raid_cfg);
+			 enum raid_level level, const struct spdk_json_val *module_params,
+			 struct raid_bdev_config **_raid_cfg);
 int raid_bdev_config_add_base_bdev(struct raid_bdev_config *raid_cfg,
 				   const char *base_bdev_name, uint8_t slot);
 void raid_bdev_config_cleanup(struct raid_bdev_config *raid_cfg);
@@ -287,6 +290,10 @@ struct raid_bdev_module {
 
 	/* Size of module's per bdev IO context */
 	size_t raid_io_ctx_size;
+
+	int (*config_parse)(struct raid_bdev_config *raid_cfg, const struct spdk_json_val *module_params);
+	void (*config_cleanup)(struct raid_bdev_config *raid_cfg);
+	// TODO: config_write_json
 
 	/*
 	 * Called when the raid is starting, right before changing the state to
