@@ -794,6 +794,7 @@ function raid_io_error_test() {
 	local create_arg
 	local bdevperf_log
 	local fail_per_s
+	local pt_uuid
 
 	if [ $raid_level != "raid1" ]; then
 		strip_size=64
@@ -835,6 +836,35 @@ function raid_io_error_test() {
 	verify_raid_bdev_state $raid_bdev_name online $raid_level $strip_size $expected_num_base_bdevs
 
 	$rpc_py bdev_raid_delete $raid_bdev_name
+
+	# Remove then re-add a base bdev to assemble the raid bdev again
+	pt_uuid="$($rpc_py bdev_get_bdevs -b ${base_bdevs[1]} | jq -r '.[].uuid')"
+	$rpc_py bdev_passthru_delete ${base_bdevs[1]}
+	$rpc_py bdev_error_delete EE_${base_bdevs[1]}_malloc
+	# Use delay to slow down rebuild
+	$rpc_py bdev_delay_create -b ${base_bdevs[1]}_malloc -d ${base_bdevs[1]}_delay -r 100000 -t 100000 -w 0 -n 0
+	$rpc_py bdev_passthru_create -b ${base_bdevs[1]}_delay -p ${base_bdevs[1]} -u "$pt_uuid"
+	waitforbdev $raid_bdev_name
+
+	# Check if the raid bdev is in the same state as before stopping
+	verify_raid_bdev_state $raid_bdev_name online $raid_level $strip_size $expected_num_base_bdevs
+	verify_raid_bdev_process $raid_bdev_name "none" "none"
+
+	if [ $expected_num_base_bdevs -ne $num_base_bdevs ]; then
+		# Remove then re-add the failed base bdev
+		$rpc_py bdev_passthru_delete ${base_bdevs[0]}
+		$rpc_py bdev_passthru_create -b EE_${base_bdevs[0]}_malloc -p ${base_bdevs[0]}
+
+		# Check if the failed base bdev was not used for rebuild
+		verify_raid_bdev_state $raid_bdev_name online $raid_level $strip_size $expected_num_base_bdevs
+		verify_raid_bdev_process $raid_bdev_name "none" "none"
+
+		# Manually re-adding the failed base bdev should be allowed
+		$rpc_py bdev_raid_add_base_bdev $raid_bdev_name ${base_bdevs[0]}
+
+		verify_raid_bdev_state $raid_bdev_name online $raid_level $strip_size $num_base_bdevs
+		verify_raid_bdev_process $raid_bdev_name "rebuild" ${base_bdevs[0]}
+	fi
 
 	killprocess $raid_pid
 

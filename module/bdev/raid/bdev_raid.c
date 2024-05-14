@@ -3606,12 +3606,12 @@ raid_bdev_examine_sb(const struct raid_bdev_superblock *sb, struct spdk_bdev *bd
 		cb_ctx = ctx;
 	}
 
-	if (raid_bdev->state == RAID_BDEV_STATE_ONLINE) {
+	if (raid_bdev->state == RAID_BDEV_STATE_ONLINE &&
+	    (sb_base_bdev->state == RAID_SB_BASE_BDEV_MISSING ||
+	     (sb_base_bdev->state == RAID_SB_BASE_BDEV_FAILED && in_configure))) {
 		assert(sb_base_bdev->slot < raid_bdev->num_base_bdevs);
 		base_info = &raid_bdev->base_bdev_info[sb_base_bdev->slot];
 		assert(base_info->is_configured == false);
-		assert(sb_base_bdev->state == RAID_SB_BASE_BDEV_MISSING ||
-		       sb_base_bdev->state == RAID_SB_BASE_BDEV_FAILED);
 		SPDK_NOTICELOG("Re-adding bdev %s to raid bdev %s.\n", bdev->name, raid_bdev->bdev.name);
 	} else {
 		if (sb_base_bdev->state != RAID_SB_BASE_BDEV_CONFIGURED) {
