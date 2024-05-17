@@ -3085,7 +3085,7 @@ raid_bdev_configure_base_bdev_cont(struct raid_base_bdev_info *base_info)
 }
 
 static void raid_bdev_examine_sb(const struct raid_bdev_superblock *sb, struct spdk_bdev *bdev,
-				 raid_base_bdev_cb cb_fn, void *cb_ctx);
+				 bool in_configure, raid_base_bdev_cb cb_fn, void *cb_ctx);
 
 static void
 raid_bdev_configure_base_bdev_check_sb_cb(const struct raid_bdev_superblock *sb, int status,
@@ -3099,8 +3099,7 @@ raid_bdev_configure_base_bdev_check_sb_cb(const struct raid_bdev_superblock *sb,
 		if (spdk_uuid_compare(&base_info->raid_bdev->bdev.uuid, &sb->uuid) == 0) {
 			struct spdk_bdev *bdev = spdk_bdev_desc_get_bdev(base_info->desc);
 
-			raid_bdev_free_base_bdev_resource(base_info);
-			raid_bdev_examine_sb(sb, bdev, base_info->configure_cb, base_info->configure_cb_ctx);
+			raid_bdev_examine_sb(sb, bdev, true, NULL, NULL);
 			return;
 		}
 		SPDK_ERRLOG("Superblock of a different raid bdev found on bdev %s\n", base_info->name);
@@ -3456,8 +3455,6 @@ typedef void (*raid_bdev_examine_load_sb_cb)(struct spdk_bdev *bdev,
 		const struct raid_bdev_superblock *sb, int status, void *ctx);
 static int raid_bdev_examine_load_sb(const char *bdev_name, raid_bdev_examine_load_sb_cb cb,
 				     void *cb_ctx);
-static void raid_bdev_examine_sb(const struct raid_bdev_superblock *sb, struct spdk_bdev *bdev,
-				 raid_base_bdev_cb cb_fn, void *cb_ctx);
 static void raid_bdev_examine_others(void *_ctx, int status);
 
 static void
@@ -3471,7 +3468,7 @@ raid_bdev_examine_others_load_cb(struct spdk_bdev *bdev, const struct raid_bdev_
 		return;
 	}
 
-	raid_bdev_examine_sb(sb, bdev, raid_bdev_examine_others, ctx);
+	raid_bdev_examine_sb(sb, bdev, false, raid_bdev_examine_others, ctx);
 }
 
 static void
@@ -3519,7 +3516,7 @@ out:
 
 static void
 raid_bdev_examine_sb(const struct raid_bdev_superblock *sb, struct spdk_bdev *bdev,
-		     raid_base_bdev_cb cb_fn, void *cb_ctx)
+		     bool in_configure, raid_base_bdev_cb cb_fn, void *cb_ctx)
 {
 	const struct raid_bdev_sb_base_bdev *sb_base_bdev = NULL;
 	struct raid_bdev *raid_bdev;
@@ -3615,8 +3612,6 @@ raid_bdev_examine_sb(const struct raid_bdev_superblock *sb, struct spdk_bdev *bd
 		assert(base_info->is_configured == false);
 		assert(sb_base_bdev->state == RAID_SB_BASE_BDEV_MISSING ||
 		       sb_base_bdev->state == RAID_SB_BASE_BDEV_FAILED);
-		assert(spdk_uuid_is_null(&base_info->uuid));
-		spdk_uuid_copy(&base_info->uuid, &sb_base_bdev->uuid);
 		SPDK_NOTICELOG("Re-adding bdev %s to raid bdev %s.\n", bdev->name, raid_bdev->bdev.name);
 	} else {
 		if (sb_base_bdev->state != RAID_SB_BASE_BDEV_CONFIGURED) {
@@ -3640,6 +3635,12 @@ raid_bdev_examine_sb(const struct raid_bdev_superblock *sb, struct spdk_bdev *bd
 			rc = -EINVAL;
 			goto out;
 		}
+	}
+
+	if (in_configure) {
+		assert(cb_fn == NULL);
+		raid_bdev_configure_base_bdev_cont(base_info);
+		return;
 	}
 
 	rc = raid_bdev_configure_base_bdev(base_info, true, cb_fn, cb_ctx);
@@ -3744,7 +3745,7 @@ raid_bdev_examine_cont(struct spdk_bdev *bdev, const struct raid_bdev_superblock
 	case 0:
 		/* valid superblock found */
 		SPDK_DEBUGLOG(bdev_raid, "raid superblock found on bdev %s\n", bdev->name);
-		raid_bdev_examine_sb(sb, bdev, NULL, NULL);
+		raid_bdev_examine_sb(sb, bdev, false, NULL, NULL);
 		break;
 	case -EINVAL:
 		/* no valid superblock, check if it can be claimed anyway */
