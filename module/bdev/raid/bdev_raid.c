@@ -174,7 +174,7 @@ raid_bdev_channel_get_base_info(struct raid_bdev_io_channel *raid_ch, struct spd
 static void	raid_bdev_examine(struct spdk_bdev *bdev);
 static int	raid_bdev_init(void);
 static void	raid_bdev_deconfigure(struct raid_bdev *raid_bdev,
-				      raid_bdev_destruct_cb cb_fn, void *cb_arg);
+				      raid_bdev_cb cb_fn, void *cb_arg);
 
 static void
 raid_bdev_ch_process_cleanup(struct raid_bdev_io_channel *raid_ch)
@@ -1885,8 +1885,7 @@ raid_bdev_configure(struct raid_bdev *raid_bdev, raid_bdev_configure_cb cb, void
  * none
  */
 static void
-raid_bdev_deconfigure(struct raid_bdev *raid_bdev, raid_bdev_destruct_cb cb_fn,
-		      void *cb_arg)
+raid_bdev_deconfigure(struct raid_bdev *raid_bdev, raid_bdev_cb cb_fn, void *cb_arg)
 {
 	if (raid_bdev->state != RAID_BDEV_STATE_ONLINE) {
 		if (cb_fn) {
@@ -2404,7 +2403,7 @@ raid_bdev_event_base_bdev(enum spdk_bdev_event_type type, struct spdk_bdev *bdev
  * cb_arg - argument to callback function
  */
 void
-raid_bdev_delete(struct raid_bdev *raid_bdev, raid_bdev_destruct_cb cb_fn, void *cb_arg)
+raid_bdev_delete(struct raid_bdev *raid_bdev, raid_bdev_cb cb_fn, void *cb_arg)
 {
 	struct raid_base_bdev_info *base_info;
 
